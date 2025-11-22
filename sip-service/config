@@ -1,0 +1,38 @@
+# CONFIGURACION BARESIP DOCKER
+
+module_path     /usr/local/lib/baresip/modules
+
+# SIP
+sip_listen      0.0.0.0:5060
+sip_cafile      /etc/ssl/certs/ca-certificates.crt
+
+# Audio Driver (PULSEAUDIO OBLIGATORIO)
+audio_player    pulse
+audio_source    pulse
+audio_alert     pulse
+
+# Codecs (Solo G711 para máxima compatibilidad)
+module          g711.so
+module          auconv.so
+module          auresamp.so
+
+# Network / NAT
+module          stun.so
+module          turn.so
+module          ice.so
+
+# Control HTTP (Para que el backend pueda marcar)
+module          httpd.so
+http_listen     0.0.0.0:8000
+
+# module          ctrl_tcp.so
+# ctrl_tcp_listen 0.0.0.0:4444
+
+# Core Modules
+module          account.so
+module          contact.so
+module          debug_cmd.so
+module          menu.so
+# module          stdio.so
+module          pulse.so
+module          uuid.so

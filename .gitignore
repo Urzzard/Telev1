@@ -1,0 +1,46 @@
+# --- Python General ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# --- Variables de Entorno y Secretos (CRÍTICO) ---
+.env
+.env.*
+
+# --- Credenciales de Google (Gemini TTS) ---
+# Ignoramos el archivo JSON de credenciales donde sea que esté
+gemini-tts.json
+*/gemini-tts.json
+backend/gemini-tts.json
+gemini-tts/gemini-tts.json
+
+# --- Credenciales SIP (Baresip) ---
+# Ignoramos el archivo con usuario y contraseña del proveedor
+sip-service/accounts
+
+# --- Archivos de Audio Temporales ---
+# Evita subir grabaciones de prueba o caché de TTS al repo
+*.wav
+*.mp3
+*.raw
+*.pcm
+
+# --- Logs y Bases de Datos locales ---
+*.log
+*.sqlite3
+
+# --- Docker ---
+# Ignorar carpetas de volúmenes si se crearon localmente
+ollama_data/
+whisper_cache/
+tts_cache/
+
+# --- IDEs y Sistema Operativo ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+websockets
+requests
+python-dotenv
+
+openai-whisper
+numpy
+scipy
+aiohttp
+
+pandas
+sqlalchemy
+pyodbc
+
+python-multipart

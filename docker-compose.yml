@@ -1,0 +1,65 @@
+services:
+  sip-service:
+    build: ./sip-service
+    container_name: sip_phone
+    ports:
+      - "8000:8000"  # Para poder ver el estado desde tu navegador o curl y realizar llamadas
+    environment:
+      - WS_URL=ws://backend:8000/ws/audio # La dirección del cerebro
+    restart: always
+
+  backend:
+    build: ./backend
+    container_name: brain_backend
+    ports:
+      - "5000:8000" # Exponemos el cerebro en el 5000 de tu PC
+    volumes:
+      - ./backend:/app            # Para desarrollo (hot reload)
+      - ./data:/app/data          # Para leer CSVs
+      - whisper_cache:/root/.cache/whisper # Para no descargar el modelo cada vez
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - TTS_URL=http://gemini-tts:5003
+      - SIP_URL=http://sip-service:8000
+      - DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
+      - DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
+    depends_on:
+      - sip-service
+      - ollama
+      - gemini-tts
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: always
+
+  gemini-tts:
+    build: ./gemini-tts  # ⚠️ AJUSTA ESTA RUTA si moviste la carpeta gemini-tts dentro de TELE
+    # Si gemini-tts está dentro de TELE, usa: build: ./gemini-tts
+    container_name: gemini_tts_app
+    ports:
+      - "5003:5003"
+    volumes:
+      # Asegúrate que la ruta al JSON sea correcta en tu estructura nueva
+      - ./gemini-tts/gemini-tts.json:/app/gemini-tts.json
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gemini-tts.json
+    restart: always
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  whisper_cache:
