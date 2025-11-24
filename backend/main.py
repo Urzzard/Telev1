@@ -1,37 +1,120 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from app.simple_agent import SimpleAudioTester
-#from app.agent import CallAgent
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from app.database import EmployeeRepository
 import requests
 import logging
 
-# Configuración de logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Main")
 
 app = FastAPI()
+db = EmployeeRepository()
+
+# Variable global para almacenar el ID del empleado actual
+CURRENT_CALL_ID = None
 
 @app.post("/call")
-def make_call(numero: str):
+def make_call(id: int):
+    """
+    Inicia llamada a un empleado por su ID.
+    
+    Params:
+        id: ID del empleado en la base de datos
+    
+    Example:
+        POST /call?id=1
+    """
+    global CURRENT_CALL_ID
+    
+    # 1. Buscar empleado por ID
+    employee = db.get_employee_by_id(id)
+    if not employee:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Empleado con ID {id} no encontrado en base de datos"
+        )
+    
+    nombre = employee.get('nombre', 'Desconocido')
+    telefono = employee.get('telefono')
+    
+    if not telefono:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Empleado {nombre} no tiene teléfono registrado"
+        )
+    
+    logger.info(f"📋 Empleado: {nombre} (ID: {id})")
+    logger.info(f"📞 Teléfono: {telefono}")
+    
+    # 2. Guardar ID actual para el WebSocket
+    CURRENT_CALL_ID = id
+    
+    # 3. Llamar con prefijo del proveedor
+    numero_completo = f"333{telefono}"
+    
     try:
-        # Iniciamos la llamada en Baresip
-        requests.get(f"http://sip-service:8000/?d{numero}", timeout=1)
-        return {"status": "calling", "number": numero}
-    except Exception as e:
-        return {"error": str(e)}
+        response = requests.get(
+            f"http://sip-service:8000/?d{numero_completo}", 
+            timeout=2
+        )
+        
+        if response.status_code == 200:
+            return {
+                "status": "calling",
+                "employee_id": id,
+                "nombre": nombre,
+                "telefono": telefono
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Error al iniciar llamada en SIP service"
+            )
+            
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error conectando con SIP service: {str(e)}"
+        )
+
+@app.get("/current_call_id")
+def get_current_call_id():
+    """
+    Retorna el ID del empleado de la llamada actual.
+    Usado por bridge.py para saber a quién está llamando.
+    """
+    global CURRENT_CALL_ID
+    
+    if CURRENT_CALL_ID is None:
+        return {"id": None, "status": "no_active_call"}
+    
+    return {"id": CURRENT_CALL_ID, "status": "active"}
 
 @app.websocket("/ws/audio")
-async def audio_websocket(websocket: WebSocket):
-    await websocket.accept()
-    logger.info("🔌 Nueva conexión de llamada entrante")
+async def audio_websocket(websocket: WebSocket, id: int):
+    """
+    WebSocket de audio para la llamada.
     
-    tester = SimpleAudioTester(websocket)
+    Params:
+        id: Query param con el ID del empleado
+    
+    Example:
+        ws://backend:8000/ws/audio?id=1
+    """
+    await websocket.accept()
+    logger.info(f"🔌 WebSocket conectado para empleado ID: {id}")
+    
+    from app.call_agent import CallAgent
+    
+    agent = CallAgent(websocket, id)
     
     try:
-        await tester.run_test()
+        await agent.iniciar_conversacion()
     except WebSocketDisconnect:
         logger.info("Socket desconectado")
     except Exception as e:
-        logger.error(f"Error crítico: {e}")
+        logger.error(f"Error en conversación: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         try:
             await websocket.close()

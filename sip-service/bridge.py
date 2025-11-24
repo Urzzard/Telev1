@@ -20,6 +20,16 @@ CHANNELS = 1
 DTYPE = 'int16'
 BLOCK_SIZE = 512
 
+def get_current_call_id():
+    """Consulta al backend el ID del empleado de la llamada actual"""
+    try:
+        res = requests.get("http://backend:8000/current_call_id", timeout=1)
+        if res.status_code == 200:
+            data = res.json()
+            return data.get('id')
+    except:
+        pass
+    return None
 
 async def bridge_loop():
     print(f"🌉 BRIDGE: Iniciando (Usando dispositivos por defecto del entorno)...")
@@ -58,8 +68,19 @@ async def bridge_loop():
                 continue
 
             # 2. Si llegamos aquí, HAY LLAMADA ESTABLECIDA. Conectar WS.
-            print(f"🔌 Intentando conectar al Backend: {BACKEND_WS_URL}")
-            async with websockets.connect(BACKEND_WS_URL) as ws:
+            # Obtener ID del empleado actual
+            employee_id = get_current_call_id()
+            
+            if employee_id:
+                ws_url = f"{BACKEND_WS_URL}?id={employee_id}"
+                print(f"🔌 Conectando con ID de empleado: {employee_id}")
+            else:
+                ws_url = BACKEND_WS_URL
+                print(f"⚠️ No se pudo obtener ID, usando URL por defecto")
+            
+            print(f"🔌 Intentando conectar al Backend: {ws_url}")
+            
+            async with websockets.connect(ws_url) as ws:
                 print("✅ WebSocket Conectado! Transmitiendo audio...")
                 
                 loop = asyncio.get_event_loop()

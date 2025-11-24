@@ -1,2 +1,2 @@
-nombre,dni,telefono,fecha_inicio,puesto
-Manuel Cruz,74291468,+51954622077,15/01/2026,Desarrollador
+id,nombre,dni,telefono,fecha_inicio,puesto
+1,Manuel Cruz,74291468,51954622077,15/01/2026,Desarrollador
