@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import requests
+import time
 from app.tts import TextToSpeech
+from app.stt import SpeechToText
 from app.database import EmployeeRepository
 from collections import deque
 
@@ -18,6 +20,9 @@ class CallAgent:
         self.BYTES_PER_SECOND = 16000
         self.audio_queue = deque()
         
+        # Duración de marcado (se asigna desde main.py)
+        self.duracion_marcado = 0
+        
         # Cargar datos del empleado POR ID
         self.employee = self.db.get_employee_by_id(self.employee_id)
         
@@ -33,12 +38,98 @@ class CallAgent:
             self.fecha_inicio = "pronto"
             logger.error(f"❌ Empleado con ID {self.employee_id} no encontrado")
 
+    async def detectar_buzon_voz(self):
+        """
+        Captura los primeros 3s de audio después de ESTABLISHED
+        y verifica si es buzón usando Whisper.
+        
+        Returns:
+            True si es buzón, False si es persona real
+        """
+        logger.info("🔍 Verificando si es buzón de voz...")
+        
+        buffer_verificacion = bytearray()
+        tiempo_inicio = time.time()
+        tiempo_limite = 3.0  # segundos
+        
+        # Capturar audio durante 3 segundos
+        while (time.time() - tiempo_inicio) < tiempo_limite:
+            try:
+                # Timeout corto para no bloquear
+                data = await asyncio.wait_for(
+                    self.ws.receive_bytes(), 
+                    timeout=0.1
+                )
+                buffer_verificacion.extend(data)
+            except asyncio.TimeoutError:
+                # No hay audio, seguir esperando
+                continue
+            except Exception as e:
+                logger.error(f"❌ Error capturando audio: {e}")
+                break
+        
+        # Verificar si capturamos suficiente audio
+        if len(buffer_verificacion) < 8000:  # Menos de 0.5s de audio
+            logger.warning("⚠️ Audio insuficiente capturado (silencio prolongado)")
+            return True  # Asumir buzón si hay silencio
+        
+        # Transcribir con Whisper
+        try:
+            
+            stt = SpeechToText()
+            
+            texto = await stt.transcribe(bytes(buffer_verificacion))
+            
+            if not texto or len(texto.strip()) < 2:
+                logger.warning("⚠️ No se detectó voz clara")
+                return True  # Posible buzón
+            
+            logger.info(f"📝 Transcripción inicial: '{texto}'")
+            
+            # Keywords de buzón (español e inglés)
+            keywords_buzon = [
+                # Español
+                "mensaje", "tono", "señal", "buzón", "buzon", 
+                "deje su", "deja tu", "después del", "despues del",
+                "grabar", "grabación", "grabacion",
+                # Inglés
+                "mailbox", "voicemail", "leave a message", 
+                "after the beep", "beep", "tone", "record"
+            ]
+            
+            texto_lower = texto.lower()
+            
+            for keyword in keywords_buzon:
+                if keyword in texto_lower:
+                    logger.warning(f"🚫 BUZÓN DETECTADO: Palabra clave '{keyword}' encontrada")
+                    return True
+            
+            logger.info(f"✅ Respuesta humana confirmada")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error transcribiendo: {e}")
+            return False  # En caso de error, asumir humano para no perder llamadas
+
     async def iniciar_conversacion(self):
         """Flujo principal de la llamada"""
+
         logger.info(f"📞 Iniciando llamada para {self.nombre}")
         await asyncio.sleep(1)  # Estabilizar audio
         
-        # Script fijo de bienvenida (FASE 2)
+        # ========== DETECCIÓN DE BUZÓN (MEJORADA) ==========
+        # Detectar buzón en todas las llamadas
+        es_buzon = await self.detectar_buzon_voz()
+        
+        if es_buzon:
+            logger.warning("🚫 Buzón detectado. Abortando llamada para evitar costos.")
+            await asyncio.sleep(0.5)
+            self._colgar()
+            return  # Salir sin reproducir nada
+        
+        logger.info("✅ Usuario real confirmado. Iniciando script de bienvenida.")
+        
+        # ========== FLUJO NORMAL DE BIENVENIDA ==========
         frases = self._construir_script_bienvenida()
         
         # Generar todos los audios en paralelo
@@ -97,7 +188,8 @@ class CallAgent:
             try:
                 await self.ws.send_bytes(pcm_data[i:i+chunk_size])
                 await asyncio.sleep(0.002)
-            except:
+            except Exception as e:
+                logger.error(f"❌ Error enviando audio: {e}")
                 return
         
         await asyncio.sleep(duracion)

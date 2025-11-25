@@ -17,7 +17,7 @@ BARESIP_HANGUP_URL = "http://127.0.0.1:8000/?b"
 SAMPLE_RATE = 8000
 CHANNELS = 1
 DTYPE = 'int16'
-BLOCK_SIZE = 512
+BLOCK_SIZE = 1024
 
 # Configuración de timeouts
 TIMEOUT_MARCADO = 25  # Segundos máximos marcando antes de abortar
@@ -159,13 +159,16 @@ async def bridge_loop():
                 # === CONEXIÓN WEBSOCKET CON BACKEND ===
                 # Obtener ID del empleado actual
                 employee_id = get_current_call_id()
-                
+
                 if employee_id:
-                    ws_url = f"{BACKEND_WS_URL}?id={employee_id}"
-                    print(f"🔌 Conectando WebSocket con ID: {employee_id}")
+                    # Pasar duración de marcado al backend para detección de buzón
+                    duracion_int = int(duracion_fase_marcado)
+                    ws_url = f"{BACKEND_WS_URL}?id={employee_id}&duracion={duracion_int}"
+                    print(f"🔌 Conectando WebSocket con ID: {employee_id}, duración marcado: {duracion_int}s")
                 else:
                     ws_url = BACKEND_WS_URL
-                    print(f"⚠️ No se obtuvo ID de empleado, usando URL por defecto")
+                    print(f"⚠️ No se obtuvo ID, usando URL por defecto")
+
                 
                 try:
                     async with websockets.connect(ws_url) as ws:

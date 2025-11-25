@@ -90,15 +90,13 @@ def get_current_call_id():
     return {"id": CURRENT_CALL_ID, "status": "active"}
 
 @app.websocket("/ws/audio")
-async def audio_websocket(websocket: WebSocket, id: int):
+async def audio_websocket(websocket: WebSocket, id: int, duracion: int = 0):
     """
     WebSocket de audio para la llamada.
     
     Params:
         id: Query param con el ID del empleado
-    
-    Example:
-        ws://backend:8000/ws/audio?id=1
+        duracion: Segundos que tardó la llamada en establecerse (para detección buzón)
     """
     await websocket.accept()
     logger.info(f"🔌 WebSocket conectado para empleado ID: {id}")
@@ -106,6 +104,7 @@ async def audio_websocket(websocket: WebSocket, id: int):
     from app.call_agent import CallAgent
     
     agent = CallAgent(websocket, id)
+    agent.duracion_marcado = duracion
     
     try:
         await agent.iniciar_conversacion()
