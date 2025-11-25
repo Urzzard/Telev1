@@ -7,18 +7,53 @@ import time
 import os
 import sys
 import numpy as np
+from enum import Enum
 
 # --- CONFIGURACIÓN ---
 BACKEND_WS_URL = os.getenv("WS_URL", "ws://backend:8000/ws/audio")
-
-# CONSULTA: Usamos el comando "l" (List calls) para ver el estado
-# La URL termina en /?l
 BARESIP_STATUS_URL = "http://127.0.0.1:8000/?l"
+BARESIP_HANGUP_URL = "http://127.0.0.1:8000/?b"
 
 SAMPLE_RATE = 8000
 CHANNELS = 1
 DTYPE = 'int16'
 BLOCK_SIZE = 512
+
+# Configuración de timeouts
+TIMEOUT_MARCADO = 25  # Segundos máximos marcando antes de abortar
+
+# --- ESTADOS DE LLAMADA ---
+class CallState(Enum):
+    IDLE = "idle"
+    DIALING = "dialing"      # EARLY detectado
+    ESTABLISHED = "established"
+
+def check_call_state():
+    """
+    Consulta el estado actual de la llamada en Baresip.
+    Retorna: (CallState, texto_completo)
+    """
+    try:
+        res = requests.get(BARESIP_STATUS_URL, timeout=0.5)
+        if res.status_code == 200:
+            texto = res.text
+            
+            # Sin llamadas activas
+            if "Active calls (0)" in texto:
+                return (CallState.IDLE, texto)
+            
+            # Llamada en estado EARLY (Marcando)
+            if "EARLY" in texto:
+                return (CallState.DIALING, texto)
+            
+            # Llamada ESTABLECIDA (Contestado o Buzón)
+            if "ESTABLISHED" in texto:
+                return (CallState.ESTABLISHED, texto)
+    except Exception as e:
+        # Si falla la consulta, asumimos IDLE
+        pass
+    
+    return (CallState.IDLE, "")
 
 def get_current_call_id():
     """Consulta al backend el ID del empleado de la llamada actual"""
@@ -31,146 +66,199 @@ def get_current_call_id():
         pass
     return None
 
+def colgar_llamada():
+    """Envía comando de colgar a Baresip"""
+    try:
+        requests.get(BARESIP_HANGUP_URL, timeout=1)
+        print("📞 Comando de colgar enviado a Baresip")
+        return True
+    except Exception as e:
+        print(f"❌ Error al colgar: {e}")
+        return False
+
 async def bridge_loop():
-    print(f"🌉 BRIDGE: Iniciando (Usando dispositivos por defecto del entorno)...")
+    """Loop principal del bridge: maneja estados y audio"""
+    print(f"🌉 BRIDGE: Iniciando...")
+    print(f"⚙️ Configuración: Timeout marcado={TIMEOUT_MARCADO}s")
 
     try:
-        print(f"🎤 Input Default: {sd.query_devices(kind='input')['name']}")
-        print(f"🔊 Output Default: {sd.query_devices(kind='output')['name']}")
+        print(f"🎤 Input: {sd.query_devices(kind='input')['name']}")
+        print(f"🔊 Output: {sd.query_devices(kind='output')['name']}")
     except:
-        pass
+        print("⚠️ No se pudieron listar dispositivos de audio")
     
     # Variables de estado
     call_active_previously = False
+    timestamp_inicio_marcado = None
+    duracion_fase_marcado = 0
     debug_counter = 0
+    ultimo_log_tiempo = 0
 
     while True:
         try:
-            # 1. Verificar estado de la llamada
-            # Consultamos la URL /?l que devuelve la lista de llamadas
-            is_call_active = check_active_call_http()
-
-            # Log de "latido" cada 10 segundos para saber que el script sigue vivo
-            debug_counter += 1
-            if debug_counter % 20 == 0: # Cada ~10 segundos (20 * 0.5s)
-                print(f"🆗 Bridge vivo. Estado llamada: {'ACTIVA' if is_call_active else 'INACTIVA'}")
-
-            if is_call_active and not call_active_previously:
-                print("📞 LLAMADA DETECTADA Y ESTABLECIDA: Conectando audio...")
-                call_active_previously = True
+            # Consultar estado actual de Baresip
+            estado, texto_baresip = check_call_state()
             
-            elif not is_call_active:
-                if call_active_previously:
-                    print("📴 LLAMADA FINALIZADA o NO CONECTADA.")
-                    call_active_previously = False
+            # Log de "heartbeat" cada 10 segundos
+            debug_counter += 1
+            if debug_counter % 20 == 0:
+                print(f"💓 Bridge activo. Estado: {estado.value}")
+
+            # ===== ESTADO: DIALING (Marcando - EARLY) =====
+            if estado == CallState.DIALING:
+                if timestamp_inicio_marcado is None:
+                    # Primera vez que detectamos el marcado
+                    timestamp_inicio_marcado = time.time()
+                    print("📞 MARCANDO... Iniciando timer de timeout")
                 
+                # Calcular tiempo transcurrido desde que empezó a marcar
+                tiempo_marcando = time.time() - timestamp_inicio_marcado
+                
+                # Log progresivo cada 5 segundos
+                if int(tiempo_marcando) % 5 == 0 and int(tiempo_marcando) != ultimo_log_tiempo:
+                    print(f"⏳ Marcando... {tiempo_marcando:.0f}s / {TIMEOUT_MARCADO}s")
+                    ultimo_log_tiempo = int(tiempo_marcando)
+                
+                # TIMEOUT: Si pasan más de X segundos sin contestar
+                if tiempo_marcando > TIMEOUT_MARCADO:
+                    print(f"⏱️ TIMEOUT: {tiempo_marcando:.1f}s marcando sin respuesta")
+                    print(f"🚫 Abortando llamada (posible no contesta o va a entrar a buzón)")
+                    
+                    colgar_llamada()
+                    timestamp_inicio_marcado = None
+                    ultimo_log_tiempo = 0
+                    
+                    # Esperar a que Baresip procese el comando
+                    await asyncio.sleep(2)
+                    continue
+                
+                # Si todavía está marcando, esperar y volver a chequear
                 await asyncio.sleep(0.5)
                 continue
-
-            # 2. Si llegamos aquí, HAY LLAMADA ESTABLECIDA. Conectar WS.
-            # Obtener ID del empleado actual
-            employee_id = get_current_call_id()
             
-            if employee_id:
-                ws_url = f"{BACKEND_WS_URL}?id={employee_id}"
-                print(f"🔌 Conectando con ID de empleado: {employee_id}")
-            else:
-                ws_url = BACKEND_WS_URL
-                print(f"⚠️ No se pudo obtener ID, usando URL por defecto")
-            
-            print(f"🔌 Intentando conectar al Backend: {ws_url}")
-            
-            async with websockets.connect(ws_url) as ws:
-                print("✅ WebSocket Conectado! Transmitiendo audio...")
+            # ===== ESTADO: ESTABLISHED (Contestado o Buzón) =====
+            elif estado == CallState.ESTABLISHED:
+                # Calcular cuánto duró la fase de marcado
+                if timestamp_inicio_marcado is not None:
+                    duracion_fase_marcado = time.time() - timestamp_inicio_marcado
+                    print(f"✅ LLAMADA ESTABLECIDA después de {duracion_fase_marcado:.1f}s de marcado")
+                    
+                    # INDICADOR DE POSIBLE BUZÓN (análisis)
+                    if duracion_fase_marcado > 22:
+                        print(f"⚠️ ALERTA: Tardó {duracion_fase_marcado:.1f}s en establecer")
+                        print(f"⚠️ Posible buzón de voz (típicamente >22s)")
+                        # FASE 2: Aquí podrías decidir colgar inmediatamente
+                    
+                    timestamp_inicio_marcado = None
+                    ultimo_log_tiempo = 0
                 
-                loop = asyncio.get_event_loop()
-
-                # Callback de entrada (Oído -> Backend)
-                def callback_input(indata, frames, time, status):
-                    if status: print(status, file=sys.stderr)
-                    try:
-                        asyncio.run_coroutine_threadsafe(ws.send(indata.tobytes()), loop)
-                    except: pass
-
-                # Abrir Streams
-                input_stream = sd.InputStream(
-                    channels=CHANNELS, samplerate=SAMPLE_RATE,
-                    dtype=DTYPE, blocksize=BLOCK_SIZE, callback=callback_input
-                )
-                output_stream = sd.OutputStream(
-                    channels=CHANNELS, samplerate=SAMPLE_RATE,
-                    dtype=DTYPE
-                )
-
-                input_stream.start()
-                output_stream.start()
-
+                if not call_active_previously:
+                    print("🎙️ Iniciando transmisión de audio con backend...")
+                    call_active_previously = True
+                
+                # === CONEXIÓN WEBSOCKET CON BACKEND ===
+                # Obtener ID del empleado actual
+                employee_id = get_current_call_id()
+                
+                if employee_id:
+                    ws_url = f"{BACKEND_WS_URL}?id={employee_id}"
+                    print(f"🔌 Conectando WebSocket con ID: {employee_id}")
+                else:
+                    ws_url = BACKEND_WS_URL
+                    print(f"⚠️ No se obtuvo ID de empleado, usando URL por defecto")
+                
                 try:
-                    # Bucle de recepción (Backend -> Boca)
-                    async for message in ws:
-                        # Chequeo constante de que la llamada siga viva
-                        if not check_active_call_http():
-                            print("📴 Corte detectado en Baresip.")
-                            break
+                    async with websockets.connect(ws_url) as ws:
+                        print("✅ WebSocket conectado. Audio en tiempo real activo.")
                         
-                        if isinstance(message, bytes):
-                            audio_chunk = np.frombuffer(message, dtype=np.int16)
-                            output_stream.write(audio_chunk)
+                        loop = asyncio.get_event_loop()
 
-                except websockets.exceptions.ConnectionClosed:
-                    print("⚠️ WebSocket cerrado por el backend.")
-                finally:
-                    input_stream.stop()
-                    output_stream.stop()
-                    print("🛑 Audio detenido.")
+                        # Callback de entrada (Micrófono virtual -> Backend)
+                        def callback_input(indata, frames, time_info, status):
+                            if status:
+                                print(f"⚠️ Audio input: {status}", file=sys.stderr)
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    ws.send(indata.tobytes()), 
+                                    loop
+                                )
+                            except:
+                                pass
 
+                        # Abrir streams de audio
+                        input_stream = sd.InputStream(
+                            channels=CHANNELS, 
+                            samplerate=SAMPLE_RATE,
+                            dtype=DTYPE, 
+                            blocksize=BLOCK_SIZE, 
+                            callback=callback_input
+                        )
+                        output_stream = sd.OutputStream(
+                            channels=CHANNELS, 
+                            samplerate=SAMPLE_RATE,
+                            dtype=DTYPE
+                        )
+
+                        input_stream.start()
+                        output_stream.start()
+                        print("🎧 Streams de audio iniciados")
+
+                        try:
+                            # Loop de recepción (Backend -> Parlante virtual)
+                            async for message in ws:
+                                # CRÍTICO: Verificar que la llamada siga activa
+                                estado_actual, _ = check_call_state()
+                                if estado_actual != CallState.ESTABLISHED:
+                                    print("📴 Llamada terminada durante transmisión")
+                                    break
+                                
+                                # Reproducir audio recibido del backend
+                                if isinstance(message, bytes):
+                                    audio_chunk = np.frombuffer(message, dtype=np.int16)
+                                    output_stream.write(audio_chunk)
+
+                        except websockets.exceptions.ConnectionClosed:
+                            print("⚠️ WebSocket cerrado por el backend")
+                        finally:
+                            # Limpiar streams
+                            input_stream.stop()
+                            output_stream.stop()
+                            input_stream.close()
+                            output_stream.close()
+                            print("🛑 Streams de audio detenidos")
+
+                except Exception as e:
+                    if "Connection refused" in str(e):
+                        print(f"⏳ Backend no disponible, reintentando...")
+                    else:
+                        print(f"❌ Error en WebSocket: {e}")
+                    await asyncio.sleep(1)
+            
+            # ===== ESTADO: IDLE (Sin llamada activa) =====
+            elif estado == CallState.IDLE:
+                if call_active_previously:
+                    print("📴 LLAMADA FINALIZADA - Sistema listo para siguiente llamada")
+                    call_active_previously = False
+                
+                # Reset completo de variables
+                timestamp_inicio_marcado = None
+                duracion_fase_marcado = 0
+                ultimo_log_tiempo = 0
+                
+                # En IDLE, polling más lento
+                await asyncio.sleep(0.5)
+            
         except Exception as e:
-            if "Connection refused" in str(e):
-                print(f"⏳ Esperando Backend (Connection refused)...")
-            else:
-                print(f"⚠️ Error en ciclo principal: {e}")
+            print(f"⚠️ Error en loop principal: {e}")
+            import traceback
+            traceback.print_exc()
             await asyncio.sleep(1)
 
-def check_active_call_http():
-    """Consulta la lista de llamadas (?l) y busca 'ESTABLISHED'"""
-    try:
-        # El truco: ?l simula presionar 'l' para listar llamadas
-        res = requests.get(BARESIP_STATUS_URL, timeout=0.5)
-        if res.status_code == 200:
-            texto = res.text
-            # Buscamos la palabra clave que indica que contestaron
-            # "ESTABLISHED" aparece cuando el audio ya fluye
-            if "ESTABLISHED" in texto:
-                return True
-    except Exception:
-        pass
-    return False
-
-# def get_device_index(name_substring, is_input=True):
-#     try:
-#         devices = sd.query_devices()
-#         # Solo la primera vez, imprimir lista completa para debug
-#         if not hasattr(get_device_index, "debug_printed"):
-#             print("\n🔍 DISPOSITIVOS DE AUDIO DETECTADOS:")
-#             for i, dev in enumerate(devices):
-#                 tipo = "ENTRADA" if dev['max_input_channels'] > 0 else "SALIDA"
-#                 print(f"   [{i}] {dev['name']} ({tipo})")
-#             get_device_index.debug_printed = True
-#             print("-" * 30)
-
-#         for i, dev in enumerate(devices):
-#             check_channels = dev['max_input_channels'] if is_input else dev['max_output_channels']
-#             # Búsqueda más flexible (case insensitive)
-#             if name_substring.lower() in dev['name'].lower() and check_channels > 0:
-#                 return i
-#     except Exception as e:
-#         print(f"Error buscando dispositivos: {e}")
-#     return None
-
 if __name__ == "__main__":
-    time.sleep(5) # Dar tiempo a que Baresip arranque
-    print("🚀 Bridge.py iniciado.")
+    print("🚀 Iniciando Bridge v2.0 (Manejo de Estados)")
+    time.sleep(5)  # Dar tiempo a que Baresip arranque
+    
     try:
         asyncio.run(bridge_loop())
     except KeyboardInterrupt:
-        pass
+        print("\n👋 Bridge detenido por usuario")
