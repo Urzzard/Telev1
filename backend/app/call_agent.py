@@ -1,9 +1,11 @@
 import asyncio
+from asyncio import Queue
 import logging
 import requests
 import time
 from app.tts import TextToSpeech
-from app.stt import SpeechToText
+#from app.stt import SpeechToText
+from app.stt import get_stt
 from app.database import EmployeeRepository
 from collections import deque
 
@@ -76,7 +78,7 @@ class CallAgent:
         # Transcribir con Whisper
         try:
             
-            stt = SpeechToText()
+            stt = get_stt()
             
             texto = await stt.transcribe(bytes(buffer_verificacion))
             
@@ -88,13 +90,22 @@ class CallAgent:
             
             # Keywords de buzón (español e inglés)
             keywords_buzon = [
-                # Español
-                "mensaje", "tono", "señal", "buzón", "buzon", 
-                "deje su", "deja tu", "después del", "despues del",
+                # Español - palabras clave
+                "buzón", "buzon", "busón", "buson",  # variantes
+                "mensaje", "mensajes", 
+                "tono", "señal", "senal",
+                "deje su", "deja tu", "deje un",
+                "después del", "despues del",
                 "grabar", "grabación", "grabacion",
+                "depositar",  # "no se puede depositar"
+                "lleno",      # "buzón lleno"
+                "no está disponible", "no esta disponible",
+                "fuera de servicio",
                 # Inglés
-                "mailbox", "voicemail", "leave a message", 
-                "after the beep", "beep", "tone", "record"
+                "mailbox", "voicemail", "voice mail",
+                "leave a message", "leave message",
+                "after the beep", "beep", "tone", "record",
+                "not available", "unavailable"
             ]
             
             texto_lower = texto.lower()
@@ -111,46 +122,64 @@ class CallAgent:
             logger.error(f"❌ Error transcribiendo: {e}")
             return False  # En caso de error, asumir humano para no perder llamadas
 
-    async def iniciar_conversacion(self):
-        """Flujo principal de la llamada"""
+    
+    async def _productor_tts(self, frases: list, queue: Queue):
+        """Genera audios y los pone en la cola"""
+        for i, texto in enumerate(frases):
+            logger.info(f"🎨 Generando audio {i+1}/{len(frases)}: '{texto[:30]}...'")
+            audio_data = await self._generar_audio(texto)
+            if audio_data:
+                await queue.put(audio_data)
 
+    async def _consumidor_audio(self, queue: Queue):
+        """Saca audios de la cola y los reproduce"""
+        while True:
+            audio_data = await queue.get()
+            
+            if audio_data is None:  # Señal de fin
+                break
+            
+            pcm_data, duracion = audio_data
+            if not await self._reproducir(pcm_data, duracion):
+                logger.info("📴 Usuario colgó. Deteniendo script.")
+                return
+
+
+    async def iniciar_conversacion(self):
+        """Flujo principal con generación paralela"""
         logger.info(f"📞 Iniciando llamada para {self.nombre}")
-        await asyncio.sleep(1)  # Estabilizar audio
+        await asyncio.sleep(0.5)
         
-        # ========== DETECCIÓN DE BUZÓN (MEJORADA) ==========
-        # Detectar buzón en todas las llamadas
+        # Detección de buzón
         es_buzon = await self.detectar_buzon_voz()
         
         if es_buzon:
-            logger.warning("🚫 Buzón detectado. Abortando llamada para evitar costos.")
+            logger.warning("🚫 Buzón detectado. Abortando llamada.")
             await asyncio.sleep(0.5)
             self._colgar()
-            return  # Salir sin reproducir nada
+            return
         
         logger.info("✅ Usuario real confirmado. Iniciando script de bienvenida.")
         
-        # ========== FLUJO NORMAL DE BIENVENIDA ==========
+        # ========== GENERACIÓN PARALELA ==========
         frases = self._construir_script_bienvenida()
         
-        # Generar todos los audios en paralelo
-        logger.info(f"🎨 Generando {len(frases)} audios...")
-        tareas = [self._generar_audio(f) for f in frases]
-        audios = await asyncio.gather(*tareas)
+        logger.info(f"🎨 Generando {len(frases)} audios en paralelo...")
+        tareas = [self._generar_audio(texto) for texto in frases]
+        resultados = await asyncio.gather(*tareas)
         
-        # Agregar a cola
-        for audio_data in audios:
-            if audio_data:
-                self.audio_queue.append(audio_data)
+        # Filtrar None y mantener orden
+        audios = [r for r in resultados if r is not None]
+        logger.info(f"✅ {len(audios)} audios listos. Reproduciendo...")
         
-        logger.info(f"✅ {len(self.audio_queue)} audios listos. Reproduciendo...")
-        
-        # Reproducir secuencialmente
-        while self.audio_queue:
-            pcm_data, duracion = self.audio_queue.popleft()
-            await self._reproducir(pcm_data, duracion)
+        # ========== REPRODUCCIÓN ORDENADA ==========
+        for i, (pcm_data, duracion) in enumerate(audios):
+            if not await self._reproducir(pcm_data, duracion):
+                logger.info("📴 Usuario colgó. Deteniendo script.")
+                return  # Salir limpiamente, sin intentar colgar
         
         logger.info("✅ Script completado. Finalizando llamada...")
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         self._colgar()
 
     def _construir_script_bienvenida(self):
@@ -176,23 +205,30 @@ class CallAgent:
             
             pcm_data = self._mp3_to_pcm(audio_mp3)
             duracion = len(pcm_data) / self.BYTES_PER_SECOND
+            logger.info(f"🔊 Audio listo: '{texto[:25]}...' ({duracion:.1f}s)")
             return (pcm_data, duracion)
         except Exception as e:
             logger.error(f"❌ Error generando audio: {e}")
             return None
 
     async def _reproducir(self, pcm_data, duracion):
-        """Transmite audio por WebSocket"""
+        """Transmite audio por WebSocket con detección de desconexión"""
         chunk_size = 1024
         for i in range(0, len(pcm_data), chunk_size):
             try:
+                # Verificar si el WebSocket sigue abierto
+                if self.ws.client_state.name != "CONNECTED":
+                    logger.warning("⚠️ WebSocket cerrado, deteniendo reproducción")
+                    return False
+                
                 await self.ws.send_bytes(pcm_data[i:i+chunk_size])
                 await asyncio.sleep(0.002)
             except Exception as e:
-                logger.error(f"❌ Error enviando audio: {e}")
-                return
+                logger.warning(f"⚠️ Conexión perdida durante reproducción")
+                return False
         
         await asyncio.sleep(duracion)
+        return True
 
     def _mp3_to_pcm(self, audio_bytes):
         import subprocess
@@ -204,8 +240,11 @@ class CallAgent:
         return pcm_data
 
     def _colgar(self):
+        """Ordena colgar al sip-service"""
         try:
-            requests.get("http://sip-service:8000/?b", timeout=1)
+            requests.get("http://sip-service:8000/?b", timeout=0.5)
             logger.info("📞 Llamada finalizada")
+        except requests.exceptions.Timeout:
+            logger.info("📞 Llamada ya finalizada")
         except Exception as e:
-            logger.error(f"⚠️ Error al colgar: {e}")
+            logger.warning(f"⚠️ Colgar: {e}")
