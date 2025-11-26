@@ -54,6 +54,12 @@ class SpeechToText:
         tmp_file = None
         try:
             audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+            
+            # NUEVO: Verificar que hay suficiente señal de audio
+            volumen_promedio = np.abs(audio_data).mean()
+            if volumen_promedio < 50:
+                logger.warning(f"⚠️ Audio muy bajo ({volumen_promedio:.0f}), ignorando")
+                return ""
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 tmp_file = tmp.name
@@ -63,14 +69,14 @@ class SpeechToText:
             result = self.model.transcribe(
                 tmp_file, 
                 fp16=(self.device == "cuda"),
-                language="es", 
-                initial_prompt="Conversación telefónica. Usuario confirma identidad. Español de Perú."
+                language="es",
+                initial_prompt="Conversación telefónica en español. Respuestas cortas: sí, no, hola, gracias."
             )
             texto = result["text"].strip()
             
-            # Filtro de alucinaciones
-            alucinaciones = ["gracias.", "subtítulos", "amara.org", "you"]
-            if not texto or any(h in texto.lower() for h in alucinaciones):
+            # NUEVO: Filtro agresivo de alucinaciones
+            if not self._es_texto_valido(texto):
+                logger.warning(f"⚠️ Texto filtrado (alucinación): '{texto[:50]}'")
                 return ""
 
             logger.info(f"🗣️ Transcripción: '{texto}'")
@@ -82,3 +88,42 @@ class SpeechToText:
         finally:
             if tmp_file and os.path.exists(tmp_file):
                 os.remove(tmp_file)
+
+    def _es_texto_valido(self, texto: str) -> bool:
+        """Filtra alucinaciones de Whisper"""
+        if not texto or len(texto) < 2:
+            return False
+        
+        texto_lower = texto.lower()
+        
+        # Patrones de alucinación conocidos
+        patrones_basura = [
+            "subtítulos", "amara.org", "gracias por ver",
+            "suscríbete", "subscribe", "like", 
+            "<|", "|>",  # Tokens especiales de Whisper
+            "♪", "♫", "🎵",  # Música
+        ]
+        
+        if any(p in texto_lower for p in patrones_basura):
+            return False
+        
+        # Detectar caracteres no latinos (chino, ruso, etc.)
+        caracteres_exoticos = sum(1 for c in texto if ord(c) > 0x024F)
+        if caracteres_exoticos > len(texto) * 0.1:  # Más del 10%
+            return False
+        
+        # Detectar repeticiones excesivas (blufufufuf...)
+        if len(texto) > 20:
+            for i in range(2, 6):
+                patron = texto[:i]
+                if texto.count(patron) > 5:
+                    return False
+        
+        # Texto muy largo sin espacios = basura
+        palabras = texto.split()
+        if palabras:
+            palabra_mas_larga = max(len(p) for p in palabras)
+            if palabra_mas_larga > 25:
+                return False
+        
+        return True
