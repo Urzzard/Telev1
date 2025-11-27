@@ -6,6 +6,8 @@ from app.tts import TextToSpeech
 from app.stt import get_stt
 from app.database import EmployeeRepository
 from app.states import CallState
+from app.llm import LLMClient
+from app.prompts import get_system_prompt_llm
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
     get_bienvenida, get_despedida_ok, get_despedida_error
@@ -20,6 +22,7 @@ class CallAgent:
         self.employee_id = employee_id
         self.tts = TextToSpeech()
         self.stt = get_stt()
+        self.llm = LLMClient()
         self.db = EmployeeRepository()
         
         # Audio config
@@ -29,6 +32,9 @@ class CallAgent:
         # Estado
         self.state = CallState.DETECTAR_BUZON
         self.duracion_marcado = 0
+        
+        # Memoria conversacional del LLM
+        self.historial_llm = []
         
         # Cargar datos del empleado
         self.employee = self.db.get_employee_by_id(self.employee_id)
@@ -141,10 +147,13 @@ class CallAgent:
             await self._hablar_frases([f"Disculpa, ¿eres {self.nombre}?"])
 
     async def _estado_bienvenida(self):
-        """Da la bienvenida y pregunta por dudas"""
+        """Da la bienvenida con streaming de audio"""
         frases = get_bienvenida(self.nombre, self.puesto, self.fecha_inicio)
         
-        if not await self._hablar_frases(frases):
+        # Unir frases y usar streaming
+        texto_completo = " ".join(frases)
+        
+        if not await self._hablar_con_streaming(texto_completo):
             self.state = CallState.FINALIZADO
             return
         
@@ -184,19 +193,48 @@ class CallAgent:
         self.state = CallState.RESPONDER
 
     async def _estado_responder(self):
-        """Responde y pregunta si hay más dudas"""
+        """Responde usando LLM con memoria conversacional"""
         
         if self.ws.client_state.name != "CONNECTED":
             self.state = CallState.FINALIZADO
             return
         
-        # TODO: Integrar LLM en siguiente fase
-        respuesta = "Por ahora no puedo responder esa pregunta específica. Recibirás toda la información por correo."
+        try:
+            system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
+            
+            # Agregar pregunta actual al historial
+            self.historial_llm.append({
+                "role": "user", 
+                "content": self.duda_actual
+            })
+            
+            # Construir mensajes con historial completo
+            messages = [{"role": "system", "content": system_prompt}] + self.historial_llm
+            
+            logger.info(f"🤖 Consultando LLM (historial: {len(self.historial_llm)} msgs): '{self.duda_actual[:50]}...'")
+            respuesta = await self.llm.generate_response(messages)
+            
+            if not respuesta or len(respuesta) < 5:
+                respuesta = "Puedes consultarlo con tu jefe de área o recursos humanos al llegar."
+            
+            # Guardar respuesta en historial
+            self.historial_llm.append({
+                "role": "assistant",
+                "content": respuesta
+            })
+            
+            logger.info(f"🤖 LLM respondió: '{respuesta}'")
+            
+        except Exception as e:
+            logger.error(f"❌ Error LLM: {e}")
+            respuesta = "Disculpa, tuve un problema. Consulta con recursos humanos al llegar."
         
-        if not await self._hablar_frases([respuesta]):
+        # Usar streaming para la respuesta
+        if not await self._hablar_con_streaming(respuesta):
             self.state = CallState.FINALIZADO
             return
         
+        # Preguntar si hay más dudas
         if not await self._hablar_frases(["¿Hay algo más en lo que pueda ayudarte?"]):
             self.state = CallState.FINALIZADO
             return
@@ -346,6 +384,75 @@ class CallAgent:
         
         return True
 
+    async def _hablar_con_streaming(self, texto: str) -> bool:
+        """
+        Divide el texto en oraciones y hace pipeline:
+        genera la siguiente mientras reproduce la actual.
+        No corta en a.m., p.m., etc.
+        """
+        # Proteger abreviaciones antes de dividir
+        texto_protegido = texto.replace("a.m.", "a·m·").replace("p.m.", "p·m·")
+        texto_protegido = texto_protegido.replace("A.M.", "A·M·").replace("P.M.", "P·M·")
+        texto_protegido = texto_protegido.replace("Sr.", "Sr·").replace("Sra.", "Sra·")
+        texto_protegido = texto_protegido.replace("Dr.", "Dr·").replace("Dra.", "Dra·")
+        
+        # Dividir en oraciones
+        oraciones = re.split(r'(?<=[.!?])\s+', texto_protegido.strip())
+        
+        # Restaurar abreviaciones y limpiar
+        oraciones = [
+            o.strip()
+            .replace("a·m·", "a.m.").replace("p·m·", "p.m.")
+            .replace("A·M·", "A.M.").replace("P·M·", "P.M.")
+            .replace("Sr·", "Sr.").replace("Sra·", "Sra.")
+            .replace("Dr·", "Dr.").replace("Dra·", "Dra.")
+            for o in oraciones if o.strip() and len(o.strip()) > 2
+        ]
+        
+        if not oraciones:
+            return True
+        
+        if len(oraciones) == 1:
+            # Solo una oración, generar y reproducir normal
+            audio = await self._generar_audio(oraciones[0])
+            if audio:
+                return await self._reproducir(audio[0], audio[1])
+            return True
+        
+        logger.info(f"🔊 Streaming {len(oraciones)} oraciones...")
+        
+        # Pipeline: generar siguiente mientras reproduce actual
+        tarea_siguiente = None
+        audio_actual = None
+        
+        for i, oracion in enumerate(oraciones):
+            # Obtener audio actual
+            if tarea_siguiente:
+                # Esperar el audio que se estaba generando en paralelo
+                audio_actual = await tarea_siguiente
+            else:
+                # Primera oracion - generar ahora
+                audio_actual = await self._generar_audio(oracion)
+            
+            # Iniciar generación de la siguiente (si hay más)
+            if i + 1 < len(oraciones):
+                tarea_siguiente = asyncio.create_task(
+                    self._generar_audio(oraciones[i + 1])
+                )
+            else:
+                tarea_siguiente = None
+            
+            # Reproducir audio actual mientras se genera el siguiente
+            if audio_actual:
+                pcm_data, duracion = audio_actual
+                if not await self._reproducir(pcm_data, duracion):
+                    # Usuario colgó - cancelar tarea pendiente
+                    if tarea_siguiente:
+                        tarea_siguiente.cancel()
+                    return False
+        
+        return True
+
     async def _generar_audio(self, texto):
         """Genera audio TTS"""
         try:
@@ -361,21 +468,32 @@ class CallAgent:
             return None
 
     async def _reproducir(self, pcm_data, duracion) -> bool:
-        """Transmite audio por WebSocket"""
+        """Transmite audio por WebSocket con diagnóstico mejorado"""
         chunk_size = 1024
+        total_enviado = 0
+        
         for i in range(0, len(pcm_data), chunk_size):
             try:
                 if self.ws.client_state.name != "CONNECTED":
-                    logger.warning("⚠️ WebSocket cerrado")
+                    logger.warning(f"⚠️ WebSocket cerrado después de enviar {total_enviado} bytes")
                     return False
                 
                 await self.ws.send_bytes(pcm_data[i:i+chunk_size])
+                total_enviado += chunk_size
                 await asyncio.sleep(0.002)
-            except Exception:
-                logger.warning("⚠️ Conexión perdida durante reproducción")
+            except Exception as e:
+                logger.warning(f"⚠️ Error enviando audio después de {total_enviado} bytes: {e}")
                 return False
         
-        await asyncio.sleep(duracion)
+        # Esperar duración en intervalos para detectar desconexión temprana
+        tiempo_restante = duracion
+        while tiempo_restante > 0:
+            if self.ws.client_state.name != "CONNECTED":
+                logger.warning(f"⚠️ WebSocket cerrado durante espera de reproducción")
+                return False
+            await asyncio.sleep(min(0.1, tiempo_restante))
+            tiempo_restante -= 0.1
+        
         return True
 
     def _mp3_to_pcm(self, audio_bytes):
@@ -407,7 +525,6 @@ class CallAgent:
         texto_lower = texto.lower()
         return any(re.search(p, texto_lower) for p in patterns)
 
-
     def _es_negacion_simple(self, texto: str) -> bool:
         """Detecta negación como respuesta a '¿alguna duda?'"""
         texto_lower = texto.lower().strip()
@@ -420,7 +537,6 @@ class CallAgent:
         ]
         
         return any(ind in texto_lower for ind in indicadores_no)
-
 
     def _es_despedida(self, texto: str) -> bool:
         """Detecta si el usuario quiere terminar"""
@@ -441,7 +557,6 @@ class CallAgent:
             return True
         
         return False
-    
 
     def _colgar(self):
         """Ordena colgar al sip-service"""
