@@ -1,4 +1,4 @@
-import httpx  # ⬅️ CAMBIO: Era aiohttp
+import httpx
 import logging
 import os
 import json
@@ -6,9 +6,10 @@ import requests
 
 logger = logging.getLogger("LLM")
 
+
 class LLMClient:
     def __init__(self):
-        self.base_url = os.getenv("OLLAMA_URL", "http://ollama:11434")  # ⬅️ CAMBIO: Renombrado a base_url
+        self.base_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
         self.model = "phi4-mini"
         logger.info(f"🧠 Cliente LLM configurado ({self.model})")
         self._ensure_model_exists()
@@ -40,6 +41,29 @@ class LLMClient:
         except Exception as e:
             logger.error(f"❌ Error verificando modelo Ollama: {e}")
 
+    async def warmup(self):
+        """Pre-carga el modelo en GPU para evitar latencia en primera llamada"""
+        logger.info("🔥 Warming up LLM...")
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": "Hola"}],
+                        "stream": False,
+                        "options": {"num_predict": 5}
+                    }
+                )
+                if response.status_code == 200:
+                    logger.info("✅ LLM warm - modelo cargado en GPU")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Warmup respondió con código: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Warmup falló: {e}")
+        return False
+
     async def generate_response(self, messages: list) -> str:
         """Genera respuesta del LLM"""
         try:
@@ -60,6 +84,10 @@ class LLMClient:
                 if response.status_code == 200:
                     data = response.json()
                     texto = data.get("message", {}).get("content", "").strip()
+                    
+                    # Limpiar respuesta de artefactos
+                    texto = self._limpiar_respuesta(texto)
+                    
                     logger.info(f"🤖 LLM Respondió: {texto[:50]}...")
                     return texto
                 else:
@@ -68,3 +96,38 @@ class LLMClient:
         except Exception as e:
             logger.error(f"❌ Error en generate_response: {e}")
             return ""
+
+    def _limpiar_respuesta(self, texto: str) -> str:
+        """Limpia artefactos de la respuesta del LLM"""
+        import re
+        
+        # Eliminar "Ana:" al inicio o en medio
+        texto = re.sub(r'\bAna:\s*', '', texto)
+        
+        # Eliminar emojis
+        texto = re.sub(r'[🌟😊👋🎉✨💼📧🏢⏰📍]', '', texto)
+        
+        # Eliminar líneas vacías múltiples
+        texto = re.sub(r'\n\s*\n', '\n', texto)
+        
+        # Eliminar espacios múltiples
+        texto = re.sub(r'  +', ' ', texto)
+        
+        return texto.strip()
+
+
+# ==================== SINGLETON ====================
+
+_llm_instance = None
+
+def get_llm():
+    """Retorna instancia única del cliente LLM"""
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = LLMClient()
+    return _llm_instance
+
+async def warmup_llm():
+    """Función para hacer warmup del LLM al iniciar"""
+    llm = get_llm()
+    await llm.warmup()

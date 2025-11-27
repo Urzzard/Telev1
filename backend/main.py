@@ -1,16 +1,43 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from contextlib import asynccontextmanager
 from app.database import EmployeeRepository
+from app.stt import get_stt
+from app.llm import warmup_llm
 import requests
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Main")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup y shutdown del servidor"""
+    # ==================== STARTUP ====================
+    logger.info("🚀 Iniciando servicios...")
+    
+    # Pre-cargar Whisper en GPU
+    logger.info("🎤 Cargando Whisper...")
+    get_stt()
+    
+    # Pre-cargar LLM en GPU (warmup)
+    logger.info("🧠 Haciendo warmup del LLM...")
+    await warmup_llm()
+    
+    logger.info("✅ Todos los servicios listos!")
+    
+    yield  # La aplicación corre aquí
+    
+    # ==================== SHUTDOWN ====================
+    logger.info("👋 Cerrando servicios...")
+
+
+app = FastAPI(lifespan=lifespan)
 db = EmployeeRepository()
 
 # Variable global para almacenar el ID del empleado actual
 CURRENT_CALL_ID = None
+
 
 @app.post("/call")
 def make_call(id: int):
@@ -76,6 +103,7 @@ def make_call(id: int):
             detail=f"Error conectando con SIP service: {str(e)}"
         )
 
+
 @app.get("/current_call_id")
 def get_current_call_id():
     """
@@ -88,6 +116,7 @@ def get_current_call_id():
         return {"id": None, "status": "no_active_call"}
     
     return {"id": CURRENT_CALL_ID, "status": "active"}
+
 
 @app.websocket("/ws/audio")
 async def audio_websocket(websocket: WebSocket, id: int, duracion: int = 0):

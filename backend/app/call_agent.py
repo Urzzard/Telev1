@@ -6,7 +6,7 @@ from app.tts import TextToSpeech
 from app.stt import get_stt
 from app.database import EmployeeRepository
 from app.states import CallState
-from app.llm import LLMClient
+from app.llm import get_llm
 from app.prompts import get_system_prompt_llm
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
@@ -22,7 +22,7 @@ class CallAgent:
         self.employee_id = employee_id
         self.tts = TextToSpeech()
         self.stt = get_stt()
-        self.llm = LLMClient()
+        self.llm = get_llm()
         self.db = EmployeeRepository()
         
         # Audio config
