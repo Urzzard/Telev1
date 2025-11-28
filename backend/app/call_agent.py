@@ -8,9 +8,11 @@ from app.database import EmployeeRepository
 from app.states import CallState
 from app.llm import get_llm
 from app.prompts import get_system_prompt_llm
+from app.intent_detector import IntentDetector
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
-    get_bienvenida, get_despedida_ok, get_despedida_error
+    get_bienvenida, get_despedida_ok, get_despedida_error, 
+    get_system_prompt_llm, get_pregunta_mas_dudas
 )
 
 logger = logging.getLogger("CallAgent")
@@ -24,6 +26,7 @@ class CallAgent:
         self.stt = get_stt()
         self.llm = get_llm()
         self.db = EmployeeRepository()
+        self.intent_detector = IntentDetector()
         
         # Audio config
         self.BYTES_PER_SECOND = 16000
@@ -193,12 +196,22 @@ class CallAgent:
         self.state = CallState.RESPONDER
 
     async def _estado_responder(self):
-        """Responde usando LLM con memoria conversacional"""
+        """Responde usando LLM - valida tema antes de responder"""
         
         if self.ws.client_state.name != "CONNECTED":
             self.state = CallState.FINALIZADO
             return
         
+        # 1. Validar si es tema permitido
+        es_permitido = self.intent_detector.es_tema_permitido(self.duda_actual)
+        categoria = self.intent_detector.detectar_categoria(self.duda_actual)
+        
+        logger.info(f"📋 Categoría: {categoria} | Permitido: {es_permitido}")
+        
+        # 2. Registrar pregunta
+        self.intent_detector.registrar_pregunta(self.duda_actual)
+        
+        # 3. Generar respuesta con LLM (siempre)
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
             
@@ -215,7 +228,7 @@ class CallAgent:
             respuesta = await self.llm.generate_response(messages)
             
             if not respuesta or len(respuesta) < 5:
-                respuesta = "Puedes consultarlo con tu jefe de área o recursos humanos al llegar."
+                respuesta = "Disculpa, no entendí tu pregunta. ¿Podrías repetirla?"
             
             # Guardar respuesta en historial
             self.historial_llm.append({
@@ -227,15 +240,15 @@ class CallAgent:
             
         except Exception as e:
             logger.error(f"❌ Error LLM: {e}")
-            respuesta = "Disculpa, tuve un problema. Consulta con recursos humanos al llegar."
+            respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
         
-        # Usar streaming para la respuesta
+        # 4. Reproducir respuesta
         if not await self._hablar_con_streaming(respuesta):
             self.state = CallState.FINALIZADO
             return
         
-        # Preguntar si hay más dudas
-        if not await self._hablar_frases(["¿Hay algo más en lo que pueda ayudarte?"]):
+        # 5. Preguntar si hay más dudas
+        if not await self._hablar_frases([get_pregunta_mas_dudas()]):
             self.state = CallState.FINALIZADO
             return
         
@@ -456,7 +469,9 @@ class CallAgent:
     async def _generar_audio(self, texto):
         """Genera audio TTS"""
         try:
-            audio_mp3 = await self.tts.synthesize(texto)
+            texto_limpio = self._limpiar_texto_para_tts(texto)
+        
+            audio_mp3 = await self.tts.synthesize(texto_limpio)
             if not audio_mp3:
                 return None
             
@@ -496,6 +511,23 @@ class CallAgent:
         
         return True
 
+    def _limpiar_texto_para_tts(self, texto: str) -> str:
+        """Limpia texto que podría ser rechazado por el TTS"""
+        # Palabras/frases que Gemini TTS puede rechazar
+        reemplazos = [
+            ("detalles personales", "información"),
+            ("datos personales", "información"),
+            ("información personal", "información"),
+            ("contactar directamente", "comunicarte"),
+            ("usuario", "nombre"),
+        ]
+        
+        texto_limpio = texto
+        for original, reemplazo in reemplazos:
+            texto_limpio = texto_limpio.replace(original, reemplazo)
+        
+        return texto_limpio
+
     def _mp3_to_pcm(self, audio_bytes):
         """Convierte MP3 a PCM"""
         import subprocess
@@ -529,13 +561,32 @@ class CallAgent:
         """Detecta negación como respuesta a '¿alguna duda?'"""
         texto_lower = texto.lower().strip()
         
-        indicadores_no = [
-            "no,", "no.", "que no", "nada", "ninguna", 
-            "no tengo", "no gracias", "no, gracias",
-            "de momento no", "por ahora no", "todo bien",
-            "todo claro", "estoy bien", "está bien"
+        # Si menciona querer saber/preguntar = NO es negación
+        indicadores_pregunta = [
+            "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
+            "puedes decirme", "podrías decirme", "podrias decirme",
+            "cuál es", "cual es", "cómo es", "como es",
+            "dónde", "donde", "cuándo", "cuando",
+            "sobre el", "sobre la", "sobre los", "sobre las",
+            "acerca de", "información", "informacion",
+            "horario", "dirección", "direccion", "portal",
+            "una pregunta", "otra pregunta", "una duda", "otra duda"
         ]
         
+        if any(ind in texto_lower for ind in indicadores_pregunta):
+            return False
+        
+        indicadores_no = [
+            "no,", "no.", "no tengo", "no gracias", "no, gracias",
+            "ninguna duda", "ninguna pregunta",
+            "de momento no", "por ahora no", 
+            "eso es todo", "eso era todo", "era todo",
+            "nada más", "nada mas",
+            "todo claro", "todo bien", "estoy bien",
+            "muy amable", "muchas gracias"
+        ]
+        
+        # Debe contener indicador de negación Y NO contener indicador de pregunta
         return any(ind in texto_lower for ind in indicadores_no)
 
     def _es_despedida(self, texto: str) -> bool:
@@ -543,16 +594,30 @@ class CallAgent:
         texto_lower = texto.lower()
         
         # Si menciona querer saber/preguntar = NO es despedida
-        if any(p in texto_lower for p in ["quisiera saber", "me gustaría", "puedes decirme", "cuál es"]):
+        indicadores_pregunta = [
+            "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
+            "puedes decirme", "podrías decirme", "podrias decirme",
+            "cuál es", "cual es", "cómo es", "como es", "qué es", "que es",
+            "dónde", "donde", "cuándo", "cuando",
+            "sobre el", "sobre la", "sobre los", "sobre las",
+            "acerca de", "información", "informacion",
+            "horario", "dirección", "direccion", "portal", "oficina",
+            "una pregunta", "otra pregunta", "una duda", "otra duda",
+            "también", "tambien", "además", "ademas",
+            "por favor", "saber"
+        ]
+        
+        if any(ind in texto_lower for ind in indicadores_pregunta):
             return False
         
-        # Contiene "gracias" + alguna forma de negación/cierre
+        # Contiene "gracias" + alguna forma de cierre definitivo
         if "gracias" in texto_lower:
-            if any(p in texto_lower for p in ["no", "nada", "eso es todo", "momento"]):
+            cierres = ["no", "nada", "eso es todo", "era todo", "momento", "ya no", "listo"]
+            if any(c in texto_lower for c in cierres):
                 return True
         
         # Despedidas directas
-        despedidas = ["chau", "adiós", "adios", "hasta luego", "bye", "nos vemos"]
+        despedidas = ["chau", "adiós", "adios", "hasta luego", "bye", "nos vemos", "me despido"]
         if any(d in texto_lower for d in despedidas):
             return True
         

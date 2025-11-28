@@ -1,22 +1,88 @@
 import random
+from datetime import datetime
 
-# Información de la empresa
+# ==================== BASE DE CONOCIMIENTO ====================
+
 EMPRESA_INFO = {
     "nombre": "Seils Land",
-    "horarios": "Lunes a Viernes de 9 a.m. a 6 p.m., con descanso de 1 p.m. a 2 p.m.",
-    "ubicacion": "Jirón Horacio Cachay Díaz 393, La Victoria",
-    "portal": "peru punto salesland punto net dos puntos ocho cero ocho ocho barra salesland guion autoservicios guion web",
-    "onboarding": "Debes acercarte a la oficina en tu fecha de inicio, en el horario correspondiente. Preséntate en recepción y serás asistido por nuestro personal de recursos humanos o tu Jefe de Área."
+    "horarios": {
+        "dias": "Lunes a Viernes",
+        "entrada": "9:00 a.m.",
+        "salida": "6:00 p.m.",
+        "descanso": "1:00 p.m. a 2:00 p.m."
+    },
+    "ubicacion": {
+        "direccion": "Jirón Horacio Cachay Díaz 393",
+        "distrito": "La Victoria",
+        "ciudad": "Lima",
+        "referencia": "Cerca del cruce con Av. México"
+    },
+    "portal_empleado": {
+        "url": "peru.salesland.net:8088/salesland-autoservicios-web",
+        "descripcion": "Portal de autoservicios para empleados"
+    },
+    "primer_dia": {
+        "instrucciones": "Presentarse en recepción",
+        "quien_atiende": "Personal de RRHH o Jefe de Área",
+        "documentos": "DNI y documentos indicados en el correo de bienvenida"
+    },
+    "contacto": {
+        "metodo": "A través del portal del empleado o presencialmente en oficina"
+    }
 }
 
+# Temas sobre los que SÍ puede responder
+TEMAS_PERMITIDOS = [
+    "horarios de trabajo",
+    "ubicación de la oficina", 
+    "dirección",
+    "portal del empleado",
+    "primer día de trabajo",
+    "qué llevar el primer día",
+    "documentos necesarios",
+    "a quién reportar",
+    "fecha de inicio",
+    "puesto de trabajo",
+    "consejos para el primer día",
+    "cómo llegar a la oficina",
+]
+
+# Temas que NO debe responder (fuera de alcance)
+TEMAS_RESTRINGIDOS = [
+    "salario", "sueldo", "pago", "remuneración",
+    "vacaciones", "días libres", "permisos",
+    "beneficios", "seguro", "eps", "afp",
+    "contrato", "tipo de contrato", "duración",
+    "ascensos", "promociones", 
+    "otros empleados", "compañeros",
+    "información confidencial",
+    "políticas internas detalladas",
+]
+
+
+# ==================== FUNCIONES DE SALUDO ====================
+
+def get_saludo_hora():
+    """Retorna saludo según la hora del día"""
+    hora = datetime.now().hour
+    if 5 <= hora < 12:
+        return "Buenos días"
+    elif 12 <= hora < 19:
+        return "Buenas tardes"
+    else:
+        return "Buenas noches"
+
+
 def get_saludo():
-    """Variaciones del saludo inicial"""
+    """Variaciones del saludo inicial con hora dinámica"""
+    saludo_hora = get_saludo_hora()
     opciones = [
-        "Hola, buenas tardes.",
-        "Buenas tardes.",
-        "Hola, muy buenas tardes.",
+        f"Hola, {saludo_hora.lower()}.",
+        f"{saludo_hora}.",
+        f"Hola, muy {saludo_hora.lower()}.",
     ]
     return random.choice(opciones)
+
 
 def get_presentacion():
     """Variaciones de la presentación"""
@@ -27,6 +93,7 @@ def get_presentacion():
     ]
     return random.choice(opciones)
 
+
 def get_verificacion(nombre: str):
     """Variaciones para verificar identidad"""
     opciones = [
@@ -35,6 +102,7 @@ def get_verificacion(nombre: str):
         f"¿Eres {nombre}?",
     ]
     return random.choice(opciones)
+
 
 def get_bienvenida(nombre: str, puesto: str, fecha: str):
     """Speech de bienvenida"""
@@ -53,6 +121,17 @@ def get_bienvenida(nombre: str, puesto: str, fecha: str):
         "¿Tienes alguna duda sobre tu incorporación?"
     ]
 
+
+def get_pregunta_mas_dudas():
+    """Pregunta si tiene más dudas"""
+    opciones = [
+        "¿Hay algo más en lo que pueda ayudarte?",
+        "¿Tienes alguna otra pregunta?",
+        "¿Alguna otra duda que pueda resolver?",
+    ]
+    return random.choice(opciones)
+
+
 def get_despedida_ok():
     """Despedida cuando todo salió bien"""
     opciones = [
@@ -61,6 +140,7 @@ def get_despedida_ok():
         "Excelente. Nos vemos pronto. ¡Hasta luego!",
     ]
     return random.choice(opciones)
+
 
 def get_despedida_error():
     """Despedida cuando no es la persona correcta"""
@@ -71,39 +151,74 @@ def get_despedida_error():
     ]
     return random.choice(opciones)
 
+
+# ==================== PROMPT DEL LLM ====================
+
 def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
-    """Prompt del sistema para el LLM"""
-    return f"""Eres Ana, asistente telefónica de RRHH de Seils Land. 
-                Estás EN MEDIO de una llamada con {nombre} (contratado como {puesto}, inicia el {fecha}).
-                Ya te presentaste y diste la bienvenida. Ahora solo respondes preguntas.
+    """
+    Prompt del sistema para el LLM.
+    Incluye toda la información permitida y restricciones claras.
+    """
+    return f"""Eres Ana, asistente telefónica de Recursos Humanos de Seils Land.
+                Estás EN MEDIO de una llamada telefónica con {nombre}.
+                Ya te presentaste y diste la bienvenida. Ahora SOLO respondes preguntas.
 
-                Información de la empresa:
-                Horarios: Lunes a Viernes de 9 a.m. a 6 p.m. (descanso 1–2 p.m.)  
-                Oficina: Jirón Horacio Cachay Díaz 393, La Victoria  
-                Portal del empleado: peru.salesland.net:8088/salesland-autoservicios-web
-                Ingreso: presentarse en recepción, RRHH te asistirá.
+                ═══════════════════════════════════════════════════════
+                DATOS DEL EMPLEADO (usa solo si preguntan específicamente):
+                ═══════════════════════════════════════════════════════
+                - Nombre: {nombre}
+                - Puesto: {puesto}  
+                - Fecha de inicio: {fecha}
 
-                REGLAS ESTRICTAS:
-                1. MÁXIMO 2 oraciones, MÁXIMO 30 palabras
-                2. NO te presentes - ya lo hiciste
-                3. NO digas "Bienvenido" - ya lo dijiste  
-                4. NO te despidas - el usuario decide cuándo terminar
-                5. NO repitas la fecha de inicio a menos que pregunten específicamente
-                6. Solo responde lo que preguntan, nada más
-                7. Si no sabes: "Puedes consultarlo con RRHH al llegar"
-                8. No uses emojis, recuerda que estas en una llamada, estos no se pueden interpretar
-                9. Si te pregunta por mas información solo menciona que tipo de información puedes brindar
-                10. Si puedes brindar un breve consejo o mensaje de aliento si te lo piden
-                
-                EJEMPLOS CORRECTOS:
-                - "El horario es de 9am a 6pm, con descanso de 1 a 2pm."
-                - "La oficina está en Jirón Horacio Cachay Díaz 393, La Victoria."
-                - "Llega con tiempo y mantén actitud receptiva."
-                - "Disculpa, no entendí. ¿Podrías repetir tu pregunta?"
-                - "Claro, no llegues tarde y manten una actitud receptiva, todo irá bien!"
+                ═══════════════════════════════════════════════════════
+                INFORMACIÓN DE LA EMPRESA (puedes compartir libremente):
+                ═══════════════════════════════════════════════════════
+                - Horario de trabajo: Lunes a Viernes, de 9:00 a.m. a 6:00 p.m.
+                - Hora de descanso: 1:00 p.m. a 2:00 p.m.
+                - Dirección: Jirón Horacio Cachay Díaz 393, La Victoria, Lima
+                - Portal del empleado: peru.salesland.net:8088/salesland-autoservicios-web
+                - Primer día: Presentarse en recepción, serás atendido por RRHH o tu Jefe de Área
+                - Documentos primer día: DNI y los documentos indicados en el correo de bienvenida
 
-                NO HAGAS ESTO:
-                - "Ana: El horario es..." (no incluyas "Ana:")
-                - "¡Bienvenido! El horario..." (no te presentes)
-                - "🌟 Que te vaya bien" (no uses emojis)
-                - "Hasta luego" (no te despidas)"""
+                ═══════════════════════════════════════════════════════
+                REGLAS ESTRICTAS - DEBES SEGUIRLAS:
+                ═══════════════════════════════════════════════════════
+                1. MÁXIMO 2 oraciones cortas (NUNCA más de 2)
+                2. MÁXIMO 35 palabras en total
+                3. NO te presentes - ya lo hiciste
+                4. NO te despidas - el usuario decide cuándo
+                5. NO uses emojis
+                6. NO escribas "Ana:" antes de responder
+                7. Sé natural y amable, varía tus respuestas
+                8. Si no entiendes, pide que repitan
+
+                ═══════════════════════════════════════════════════════
+                TEMAS QUE NO PUEDES RESPONDER (deriva a RRHH):
+                ═══════════════════════════════════════════════════════
+                - Salario, sueldo, pagos, remuneración
+                - Beneficios, seguros, EPS, AFP
+                - Vacaciones, permisos
+                - Información de otros empleados
+                - Detalles de contratos
+
+                Para estos temas responde SOLO:
+                "Esa información te la dará RRHH cuando llegues."
+
+                ═══════════════════════════════════════════════════════
+                EJEMPLOS DE RESPUESTAS CORRECTAS:
+                ═══════════════════════════════════════════════════════
+                P: ¿Cuál es el horario?
+                R: El horario es de 9 de la mañana a 6 de la tarde, con descanso de 1 a 2.
+
+                P: ¿Dónde queda la oficina?
+                R: Estamos en Jirón Horacio Cachay Díaz 393, en La Victoria.
+
+                P: ¿Cuánto voy a ganar?
+                R: Esa información te la dará RRHH cuando llegues.
+
+                P: ¿Qué ganan mis compañeros?
+                R: No tengo acceso a esa información. RRHH podrá ayudarte.
+
+                P: ¿Algún consejo?
+                R: Llega unos minutos antes y mantén actitud positiva. Todo saldrá bien.
+                """
