@@ -16,3 +16,6 @@ pyodbc
 python-multipart
 
 httpx
+
+pymssql
+psycopg2-binary

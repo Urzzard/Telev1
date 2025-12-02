@@ -4,7 +4,7 @@ import requests
 import re
 from app.tts import TextToSpeech
 from app.stt import get_stt
-from app.database import EmployeeRepository
+#from app.database import EmployeeRepository
 from app.states import CallState
 from app.llm import get_llm
 from app.prompts import get_system_prompt_llm
@@ -14,18 +14,57 @@ from app.prompts import (
     get_bienvenida, get_despedida_ok, get_despedida_error, 
     get_system_prompt_llm, get_pregunta_mas_dudas
 )
+from app.postgres_db import get_postgres_db
 
 logger = logging.getLogger("CallAgent")
 
 
 class CallAgent:
+    #    USANDO CSV
+    # def __init__(self, websocket, employee_id: int):
+    #     self.ws = websocket
+    #     self.employee_id = employee_id
+    #     self.tts = TextToSpeech()
+    #     self.stt = get_stt()
+    #     self.llm = get_llm()
+    #     self.db = EmployeeRepository()
+    #     self.intent_detector = IntentDetector()
+        
+    #     # Audio config
+    #     self.BYTES_PER_SECOND = 16000
+    #     self.SAMPLE_RATE = 8000
+        
+    #     # Estado
+    #     self.state = CallState.DETECTAR_BUZON
+    #     self.duracion_marcado = 0
+        
+    #     # Memoria conversacional del LLM
+    #     self.historial_llm = []
+        
+    #     # Cargar datos del empleado
+    #     self.employee = self.db.get_employee_by_id(self.employee_id)
+    #     self.intentos_confirmacion = 0
+    #     self.MAX_INTENTOS = 3
+
+    #     self.resultado_final = None
+        
+    #     if self.employee:
+    #         self.nombre = self.employee.get('nombre', 'colaborador')
+    #         self.puesto = self.employee.get('puesto', 'nuevo ingreso')
+    #         self.fecha_inicio = self.employee.get('fecha_inicio', 'pronto')
+    #         logger.info(f"📋 Empleado cargado: {self.nombre} - {self.puesto}")
+    #     else:
+    #         self.nombre = "colaborador"
+    #         self.puesto = "nuevo ingreso"
+    #         self.fecha_inicio = "pronto"
+    #         logger.error(f"❌ Empleado con ID {self.employee_id} no encontrado")
+
     def __init__(self, websocket, employee_id: int):
         self.ws = websocket
         self.employee_id = employee_id
         self.tts = TextToSpeech()
         self.stt = get_stt()
         self.llm = get_llm()
-        self.db = EmployeeRepository()
         self.intent_detector = IntentDetector()
         
         # Audio config
@@ -39,60 +78,100 @@ class CallAgent:
         # Memoria conversacional del LLM
         self.historial_llm = []
         
-        # Cargar datos del empleado
-        self.employee = self.db.get_employee_by_id(self.employee_id)
+        # Cargar datos del empleado desde PostgreSQL
+        self._cargar_empleado_postgres()
+        
         self.intentos_confirmacion = 0
         self.MAX_INTENTOS = 3
-        
-        if self.employee:
-            self.nombre = self.employee.get('nombre', 'colaborador')
-            self.puesto = self.employee.get('puesto', 'nuevo ingreso')
-            self.fecha_inicio = self.employee.get('fecha_inicio', 'pronto')
-            logger.info(f"📋 Empleado cargado: {self.nombre} - {self.puesto}")
-        else:
-            self.nombre = "colaborador"
-            self.puesto = "nuevo ingreso"
-            self.fecha_inicio = "pronto"
-            logger.error(f"❌ Empleado con ID {self.employee_id} no encontrado")
+        self.resultado_final = None
+
+    def _cargar_empleado_postgres(self):
+        """Carga datos del empleado desde PostgreSQL"""
+        try:
+            pg = get_postgres_db()
+            if pg.connect():
+                with pg.get_cursor() as cur:
+                    cur.execute("""
+                        SELECT nombre, puesto, fecha_ingreso, celular
+                        FROM empleados WHERE id = %s
+                    """, (self.employee_id,))
+                    row = cur.fetchone()
+                    
+                    if row:
+                        self.nombre = row["nombre"] or "colaborador"
+                        self.puesto = row["puesto"] or "nuevo ingreso"
+                        self.fecha_inicio = str(row["fecha_ingreso"]) if row["fecha_ingreso"] else "pronto"
+                        logger.info(f"📋 Empleado cargado: {self.nombre} - {self.puesto}")
+                    else:
+                        self._set_datos_default()
+                        logger.error(f"❌ Empleado {self.employee_id} no encontrado en PostgreSQL")
+                pg.disconnect()
+            else:
+                self._set_datos_default()
+        except Exception as e:
+            logger.error(f"❌ Error cargando empleado: {e}")
+            self._set_datos_default()
+
+    def _set_datos_default(self):
+        """Valores por defecto si no se encuentra empleado"""
+        self.nombre = "colaborador"
+        self.puesto = "nuevo ingreso"
+        self.fecha_inicio = "pronto"
+
 
     async def iniciar_conversacion(self):
         """Flujo principal usando máquina de estados"""
         logger.info(f"📞 Iniciando llamada para {self.nombre}")
         await asyncio.sleep(0.5)
         
-        while self.state != CallState.FINALIZADO:
+        llamada_completada = False
+        
+        try:
+            while self.state != CallState.FINALIZADO:
 
-            if self.ws.client_state.name != "CONNECTED":
-                logger.warning("📴 WebSocket desconectado, finalizando")
-                break
+                if self.ws.client_state.name != "CONNECTED":
+                    logger.warning("📴 WebSocket desconectado, finalizando")
+                    break
 
-            logger.info(f"🔄 Estado: {self.state.value}")
-            
-            if self.state == CallState.DETECTAR_BUZON:
-                await self._estado_detectar_buzon()
-            
-            elif self.state == CallState.PRESENTACION:
-                await self._estado_presentacion()
-            
-            elif self.state == CallState.ESPERAR_CONFIRMACION:
-                await self._estado_esperar_confirmacion()
-            
-            elif self.state == CallState.BIENVENIDA:
-                await self._estado_bienvenida()
-            
-            elif self.state == CallState.ESPERAR_DUDAS:
-                await self._estado_esperar_dudas()
-            
-            elif self.state == CallState.RESPONDER:
-                await self._estado_responder()
-            
-            elif self.state == CallState.DESPEDIDA_OK:
-                await self._estado_despedida_ok()
-            
-            elif self.state == CallState.DESPEDIDA_ERROR:
-                await self._estado_despedida_error()
+                logger.info(f"🔄 Estado: {self.state.value}")
+                
+                if self.state == CallState.DETECTAR_BUZON:
+                    await self._estado_detectar_buzon()
+                
+                elif self.state == CallState.PRESENTACION:
+                    await self._estado_presentacion()
+                
+                elif self.state == CallState.ESPERAR_CONFIRMACION:
+                    await self._estado_esperar_confirmacion()
+                
+                elif self.state == CallState.BIENVENIDA:
+                    await self._estado_bienvenida()
+                
+                elif self.state == CallState.ESPERAR_DUDAS:
+                    await self._estado_esperar_dudas()
+                
+                elif self.state == CallState.RESPONDER:
+                    await self._estado_responder()
+                
+                elif self.state == CallState.DESPEDIDA_OK:
+                    await self._estado_despedida_ok()
+                    llamada_completada = True
+                
+                elif self.state == CallState.DESPEDIDA_ERROR:
+                    await self._estado_despedida_error()
+                    llamada_completada = True
+        
+        except Exception as e:
+            logger.error(f"❌ Error en conversación: {e}")
+        
+        finally:
+            # Si la llamada no se completó normalmente, marcar como fallido
+            if not llamada_completada and self.state != CallState.FINALIZADO:
+                logger.warning("⚠️ Llamada terminó inesperadamente")
+                self._actualizar_resultado_postgres("FALLIDO")
         
         logger.info("📞 Llamada finalizada")
+        
 
     # ==================== ESTADOS ====================
 
@@ -102,6 +181,7 @@ class CallAgent:
         
         if es_buzon:
             logger.warning("🚫 Buzón detectado. Abortando.")
+            self._actualizar_resultado_postgres("FALLIDO")
             self._colgar()
             self.state = CallState.FINALIZADO
         else:
@@ -258,6 +338,8 @@ class CallAgent:
         """Despedida exitosa"""
         await self._hablar_frases([get_despedida_ok()])
         await asyncio.sleep(0.5)
+        self._actualizar_resultado_postgres("EXITO")
+
         self._colgar()
         self.state = CallState.FINALIZADO
 
@@ -265,6 +347,8 @@ class CallAgent:
         """Despedida por error/no es la persona"""
         await self._hablar_frases([get_despedida_error()])
         await asyncio.sleep(0.5)
+
+        self._actualizar_resultado_postgres("FALLIDO")
         self._colgar()
         self.state = CallState.FINALIZADO
 
@@ -622,6 +706,20 @@ class CallAgent:
             return True
         
         return False
+
+    def _actualizar_resultado_postgres(self, resultado: str):
+        """Actualiza el resultado de la llamada en PostgreSQL"""
+        try:
+            pg = get_postgres_db()
+            if pg.connect():
+                if resultado == "EXITO":
+                    pg.marcar_exito(self.employee_id)
+                else:
+                    pg.marcar_intento_fallido(self.employee_id, minutos_espera=5)
+                pg.disconnect()
+                logger.info(f"📊 PostgreSQL actualizado: {resultado}")
+        except Exception as e:
+            logger.error(f"❌ Error actualizando PostgreSQL: {e}")    
 
     def _colgar(self):
         """Ordena colgar al sip-service"""

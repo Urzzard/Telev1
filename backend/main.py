@@ -1,8 +1,8 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from contextlib import asynccontextmanager
-from app.database import EmployeeRepository
 from app.stt import get_stt
 from app.llm import warmup_llm
+from app.postgres_db import get_postgres_db
 import requests
 import logging
 
@@ -13,47 +13,61 @@ logger = logging.getLogger("Main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup y shutdown del servidor"""
-    # ==================== STARTUP ====================
     logger.info("🚀 Iniciando servicios...")
     
-    # Pre-cargar Whisper en GPU
     logger.info("🎤 Cargando Whisper...")
     get_stt()
     
-    # Pre-cargar LLM en GPU (warmup)
     logger.info("🧠 Haciendo warmup del LLM...")
     await warmup_llm()
     
     logger.info("✅ Todos los servicios listos!")
     
-    yield  # La aplicación corre aquí
+    yield
     
-    # ==================== SHUTDOWN ====================
     logger.info("👋 Cerrando servicios...")
 
 
 app = FastAPI(lifespan=lifespan)
-db = EmployeeRepository()
 
 # Variable global para almacenar el ID del empleado actual
 CURRENT_CALL_ID = None
+
+
+def _obtener_empleado_postgres(employee_id: int):
+    """Obtiene datos del empleado desde PostgreSQL"""
+    try:
+        pg = get_postgres_db()
+        if pg.connect():
+            with pg.get_cursor() as cur:
+                cur.execute("""
+                    SELECT id, nombre, celular, puesto
+                    FROM empleados WHERE id = %s
+                """, (employee_id,))
+                row = cur.fetchone()
+            pg.disconnect()
+            
+            if row:
+                return {
+                    "id": row["id"],
+                    "nombre": row["nombre"],
+                    "telefono": row["celular"],
+                    "puesto": row["puesto"]
+                }
+    except Exception as e:
+        logger.error(f"❌ Error consultando PostgreSQL: {e}")
+    return None
 
 
 @app.post("/call")
 def make_call(id: int):
     """
     Inicia llamada a un empleado por su ID.
-    
-    Params:
-        id: ID del empleado en la base de datos
-    
-    Example:
-        POST /call?id=1
     """
     global CURRENT_CALL_ID
     
-    # 1. Buscar empleado por ID
-    employee = db.get_employee_by_id(id)
+    # Buscar empleado en PostgreSQL
+    employee = _obtener_empleado_postgres(id)
     if not employee:
         raise HTTPException(
             status_code=404, 
@@ -72,10 +86,10 @@ def make_call(id: int):
     logger.info(f"📋 Empleado: {nombre} (ID: {id})")
     logger.info(f"📞 Teléfono: {telefono}")
     
-    # 2. Guardar ID actual para el WebSocket
+    # Guardar ID actual para el WebSocket
     CURRENT_CALL_ID = id
     
-    # 3. Llamar con prefijo del proveedor
+    # Llamar con prefijo del proveedor
     numero_completo = f"333{telefono}"
     
     try:
@@ -106,10 +120,7 @@ def make_call(id: int):
 
 @app.get("/current_call_id")
 def get_current_call_id():
-    """
-    Retorna el ID del empleado de la llamada actual.
-    Usado por bridge.py para saber a quién está llamando.
-    """
+    """Retorna el ID del empleado de la llamada actual."""
     global CURRENT_CALL_ID
     
     if CURRENT_CALL_ID is None:
@@ -120,13 +131,7 @@ def get_current_call_id():
 
 @app.websocket("/ws/audio")
 async def audio_websocket(websocket: WebSocket, id: int, duracion: int = 0):
-    """
-    WebSocket de audio para la llamada.
-    
-    Params:
-        id: Query param con el ID del empleado
-        duracion: Segundos que tardó la llamada en establecerse (para detección buzón)
-    """
+    """WebSocket de audio para la llamada."""
     await websocket.accept()
     logger.info(f"🔌 WebSocket conectado para empleado ID: {id}")
     
@@ -148,3 +153,21 @@ async def audio_websocket(websocket: WebSocket, id: int, duracion: int = 0):
             await websocket.close()
         except:
             pass
+
+
+@app.post("/call_failed")
+async def call_failed(id: int, reason: str = "no_contestado"):
+    """Callback cuando una llamada falla (timeout, rechazada, etc.)"""
+    logger.warning(f"📴 Llamada fallida para empleado {id}: {reason}")
+    
+    try:
+        pg = get_postgres_db()
+        if pg.connect():
+            pg.marcar_intento_fallido(id, minutos_espera=5)
+            pg.disconnect()
+            logger.info(f"📊 Empleado {id}: intento fallido registrado")
+            return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"❌ Error actualizando estado: {e}")
+    
+    return {"status": "error"}

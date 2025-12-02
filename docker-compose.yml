@@ -15,20 +15,35 @@ services:
       - "5000:8000" # Exponemos el cerebro en el 5000 de tu PC
     volumes:
       - ./backend:/app            # Para desarrollo (hot reload)
-      - ./data:/app/data          # Para leer CSVs
+      #- ./data:/app/data          # Para leer CSVs
       - whisper_cache:/root/.cache/whisper # Para no descargar el modelo cada vez
     environment:
+      - TZ=America/Lima
       - OLLAMA_URL=http://ollama:11434
       - TTS_URL=http://gemini-tts:5003
       - SIP_URL=http://sip-service:8000
-      - DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
-      - DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
+      #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
+      #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
       - WHISPER_DEVICE=cuda
       - WHISPER_MODEL=base 
+
+      - SQLSERVER_HOST=${SQLSERVER_HOST}
+      - SQLSERVER_PORT=${SQLSERVER_PORT}
+      - SQLSERVER_DB=${SQLSERVER_DBNAME}
+      - SQLSERVER_USER=${SQLSERVER_USER}
+      - SQLSERVER_PASSWORD=${SQLSERVER_PASSWORD}
+      
+      # NUEVO: PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=telefonista
+      - POSTGRES_USER=telefonista
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-telefonista123}
     depends_on:
       - sip-service
       - ollama
       - gemini-tts
+      - postgres
     deploy:
       resources:
         reservations:
@@ -68,6 +83,27 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: telefonista_db
+    restart: unless-stopped
+    environment:
+      - TZ=America/Lima
+      - PGTZ=America/Lima
+      - POSTGRES_DB=telefonista
+      - POSTGRES_USER=telefonista
+      - POSTGRES_PASSWORD=telefonista123
+    volumes:
+      - ./database/data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telefonista -d telefonista"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 volumes:
   ollama_data:
   whisper_cache:

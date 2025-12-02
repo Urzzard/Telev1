@@ -76,6 +76,21 @@ def colgar_llamada():
         print(f"❌ Error al colgar: {e}")
         return False
 
+def notificar_llamada_fallida(employee_id: int, reason: str):
+    """Notifica al backend que la llamada falló"""
+    try:
+        response = requests.post(
+            "http://backend:8000/call_failed",
+            params={"id": employee_id, "reason": reason},
+            timeout=5
+        )
+        if response.status_code == 200:
+            print(f"✅ Backend notificado: llamada fallida ({reason})")
+        else:
+            print(f"⚠️ Error notificando backend: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Error notificando backend: {e}")
+
 async def bridge_loop():
     """Loop principal del bridge: maneja estados y audio"""
     print(f"🌉 BRIDGE: Iniciando...")
@@ -125,6 +140,11 @@ async def bridge_loop():
                     print(f"🚫 Abortando llamada (posible no contesta o va a entrar a buzón)")
                     
                     colgar_llamada()
+
+                    employee_id = get_current_call_id()
+                    if employee_id:
+                        notificar_llamada_fallida(employee_id, "timeout_no_contesta")
+
                     timestamp_inicio_marcado = None
                     ultimo_log_tiempo = 0
                     

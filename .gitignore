@@ -16,6 +16,7 @@ env/
 gemini-tts.json
 */gemini-tts.json
 backend/gemini-tts.json
+backend/test/
 gemini-tts/gemini-tts.json
 
 # --- Credenciales SIP (Baresip) ---
@@ -44,3 +45,7 @@ tts_cache/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- DATABASE
+
+database/data/
