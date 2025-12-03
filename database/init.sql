@@ -17,9 +17,9 @@ CREATE TABLE empleados (
     intentos INTEGER DEFAULT 0,
     
     -- Timestamps
-    sincronizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    proxima_llamada TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    sincronizado_en TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    actualizado_en TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    proxima_llamada TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Tabla de historial de llamadas
@@ -30,7 +30,7 @@ CREATE TABLE llamadas (
     resultado VARCHAR(30) NOT NULL,
     duracion_segundos INTEGER DEFAULT 0,
     iniciada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    finalizada_en TIMESTAMP,
+    finalizada_en TIMESTAMPTZ,
     notas TEXT
 );
 
@@ -38,7 +38,7 @@ CREATE TABLE llamadas (
 CREATE TABLE configuracion (
     clave VARCHAR(50) PRIMARY KEY,
     valor TEXT NOT NULL,
-    actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    actualizado_en TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Valor inicial: último ID procesado

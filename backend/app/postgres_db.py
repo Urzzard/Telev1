@@ -251,6 +251,24 @@ class PostgresDB:
             return resumen
 
 
+    def actualizar_llamada(self, empleado_id: int, resultado: str):
+        """Actualiza la última llamada en curso de un empleado"""
+        with self.get_cursor() as cur:
+            cur.execute("""
+                UPDATE llamadas 
+                SET resultado = %s, 
+                    finalizada_en = CURRENT_TIMESTAMP,
+                    duracion_segundos = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - iniciada_en))::integer
+                WHERE id = (
+                    SELECT id FROM llamadas 
+                    WHERE empleado_id = %s AND resultado = 'en_curso'
+                    ORDER BY iniciada_en DESC
+                    LIMIT 1
+                )
+            """, (resultado, empleado_id))
+        logger.info(f"📝 Llamada actualizada: emp={empleado_id}, resultado={resultado}")
+
+
 # Instancia global
 _db_instance = None
 

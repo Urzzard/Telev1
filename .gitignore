@@ -17,6 +17,7 @@ gemini-tts.json
 */gemini-tts.json
 backend/gemini-tts.json
 backend/test/
+data/
 gemini-tts/gemini-tts.json
 
 # --- Credenciales SIP (Baresip) ---

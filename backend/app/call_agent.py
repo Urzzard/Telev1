@@ -100,7 +100,7 @@ class CallAgent:
                     if row:
                         self.nombre = row["nombre"] or "colaborador"
                         self.puesto = row["puesto"] or "nuevo ingreso"
-                        self.fecha_inicio = str(row["fecha_ingreso"]) if row["fecha_ingreso"] else "pronto"
+                        self.fecha_inicio = self._formatear_fecha(row["fecha_ingreso"])
                         logger.info(f"📋 Empleado cargado: {self.nombre} - {self.puesto}")
                     else:
                         self._set_datos_default()
@@ -117,6 +117,20 @@ class CallAgent:
         self.nombre = "colaborador"
         self.puesto = "nuevo ingreso"
         self.fecha_inicio = "pronto"
+
+    
+    def _formatear_fecha(self, fecha_str: str) -> str:
+        """Convierte '2025-12-02' a '02/12/2025' para que el TTS lo lea bien"""
+        try:
+            from datetime import datetime
+            
+            if fecha_str and "-" in str(fecha_str):
+                fecha = datetime.strptime(str(fecha_str), "%Y-%m-%d")
+                return fecha.strftime("%d/%m/%Y")
+            
+            return str(fecha_str) if fecha_str else "pronto"
+        except:
+            return str(fecha_str) if fecha_str else "pronto"
 
 
     async def iniciar_conversacion(self):
@@ -714,12 +728,15 @@ class CallAgent:
             if pg.connect():
                 if resultado == "EXITO":
                     pg.marcar_exito(self.employee_id)
+                    pg.actualizar_llamada(self.employee_id, "completada")
                 else:
                     pg.marcar_intento_fallido(self.employee_id, minutos_espera=5)
+                    pg.actualizar_llamada(self.employee_id, "fallida")
+                
                 pg.disconnect()
                 logger.info(f"📊 PostgreSQL actualizado: {resultado}")
         except Exception as e:
-            logger.error(f"❌ Error actualizando PostgreSQL: {e}")    
+            logger.error(f"❌ Error actualizando PostgreSQL: {e}")  
 
     def _colgar(self):
         """Ordena colgar al sip-service"""
