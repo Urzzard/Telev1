@@ -411,7 +411,7 @@ class CallAgent:
             "mailbox", "voicemail", "voice mail",
             "leave a message", "leave message",
             "after the beep", "beep", "tone", "record",
-            "not available", "unavailable"
+            "not available", "unavailable", "disón"
         ]
         
         texto_lower = texto.lower()

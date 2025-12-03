@@ -164,6 +164,7 @@ async def call_failed(id: int, reason: str = "no_contestado"):
         pg = get_postgres_db()
         if pg.connect():
             pg.marcar_intento_fallido(id, minutos_espera=5)
+            pg.actualizar_llamada(id, "fallida")
             pg.disconnect()
             logger.info(f"📊 Empleado {id}: intento fallido registrado")
             return {"status": "ok"}

@@ -29,7 +29,7 @@ CREATE TABLE llamadas (
     intento INTEGER NOT NULL,
     resultado VARCHAR(30) NOT NULL,
     duracion_segundos INTEGER DEFAULT 0,
-    iniciada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    iniciada_en TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     finalizada_en TIMESTAMPTZ,
     notas TEXT
 );

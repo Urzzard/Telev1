@@ -104,6 +104,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  scheduler:
+    build: ./backend
+    container_name: telefonista_scheduler
+    command: ["sh", "-c", "echo 'Esperando 4 min para iniciar...' && sleep 240 && python scheduler.py"]
+    environment:
+      - TZ=America/Lima
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=telefonista
+      - POSTGRES_USER=telefonista
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-telefonista123}
+      - SQLSERVER_HOST=${SQLSERVER_HOST}
+      - SQLSERVER_PORT=${SQLSERVER_PORT}
+      - SQLSERVER_DB=${SQLSERVER_DBNAME}
+      - SQLSERVER_USER=${SQLSERVER_USER}
+      - SQLSERVER_PASSWORD=${SQLSERVER_PASSWORD}
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - postgres
+      - backend
+    restart: always
+
 volumes:
   ollama_data:
   whisper_cache:
