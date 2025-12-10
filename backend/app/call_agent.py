@@ -250,7 +250,7 @@ class CallAgent:
         # Unir frases y usar streaming
         texto_completo = " ".join(frases)
         
-        if not await self._hablar_con_streaming(texto_completo):
+        if not await self._hablar_con_streaming_real(texto_completo):
             self.state = CallState.FINALIZADO
             return
         
@@ -337,7 +337,7 @@ class CallAgent:
             respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
         
         # 4. Reproducir respuesta
-        if not await self._hablar_con_streaming(respuesta):
+        if not await self._hablar_con_streaming_real(respuesta):
             self.state = CallState.FINALIZADO
             return
         
@@ -481,19 +481,24 @@ class CallAgent:
             logger.info(f"👤 Usuario: '{texto}'")
         return texto
 
+    # async def _hablar_frases(self, frases: list) -> bool:
+    #     """Genera y reproduce frases en paralelo"""
+    #     logger.info(f"🎨 Generando {len(frases)} audios...")
+        
+    #     tareas = [self._generar_audio(f) for f in frases]
+    #     resultados = await asyncio.gather(*tareas)
+    #     audios = [r for r in resultados if r is not None]
+        
+    #     for pcm_data, duracion in audios:
+    #         if not await self._reproducir(pcm_data, duracion):
+    #             return False
+        
+    #     return True
+
     async def _hablar_frases(self, frases: list) -> bool:
-        """Genera y reproduce frases en paralelo"""
-        logger.info(f"🎨 Generando {len(frases)} audios...")
-        
-        tareas = [self._generar_audio(f) for f in frases]
-        resultados = await asyncio.gather(*tareas)
-        audios = [r for r in resultados if r is not None]
-        
-        for pcm_data, duracion in audios:
-            if not await self._reproducir(pcm_data, duracion):
-                return False
-        
-        return True
+        """Reproduce frases usando streaming real"""
+        texto_completo = " ".join(frases)
+        return await self._hablar_con_streaming_real(texto_completo)
 
     async def _hablar_con_streaming(self, texto: str) -> bool:
         """
@@ -563,6 +568,74 @@ class CallAgent:
                     return False
         
         return True
+
+
+    async def _hablar_con_streaming_real(self, texto: str) -> bool:
+        """
+        Usa Chirp3-HD con streaming real.
+        El audio empieza a sonar mientras se genera.
+        """
+        import numpy as np
+        from scipy import signal
+        
+        if self.ws.client_state.name != "CONNECTED":
+            return False
+        
+        logger.info(f"🎤 [STREAM] Reproduciendo: '{texto[:40]}...'")
+        
+        buffer_resample = bytearray()
+        total_bytes_8k = 0  # Para calcular duración
+        
+        try:
+            async for chunk in self.tts.synthesize_stream(texto):
+                buffer_resample.extend(chunk)
+                
+                while len(buffer_resample) >= 4800:
+                    bloque = bytes(buffer_resample[:4800])
+                    buffer_resample = buffer_resample[4800:]
+                    
+                    audio_24k = np.frombuffer(bloque, dtype=np.int16)
+
+                    audio_8k = signal.resample_poly(audio_24k, 1, 3)
+                    audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+                    
+                    if self.ws.client_state.name != "CONNECTED":
+                        return False
+                    
+                    await self.ws.send_bytes(audio_8k.tobytes())
+                    total_bytes_8k += len(audio_8k.tobytes())
+                    await asyncio.sleep(0.01)
+            
+            # Procesar resto del buffer
+            if len(buffer_resample) > 0:
+                audio_24k = np.frombuffer(bytes(buffer_resample), dtype=np.int16)
+                if len(audio_24k) > 3:
+                    
+                    audio_8k = signal.resample_poly(audio_24k, 1, 3)
+                    audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+
+                    await self.ws.send_bytes(audio_8k.tobytes())
+                    total_bytes_8k += len(audio_8k.tobytes())
+            
+            # Calcular duración y esperar a que termine de reproducirse
+            # Audio 8000Hz mono 16-bit = 16000 bytes/segundo
+            duracion = total_bytes_8k / 16000
+            logger.info(f"✅ [STREAM] Enviado {total_bytes_8k} bytes, esperando {duracion:.1f}s")
+            
+            # Esperar mientras se reproduce
+            tiempo_restante = duracion
+            while tiempo_restante > 0:
+                if self.ws.client_state.name != "CONNECTED":
+                    return False
+                await asyncio.sleep(min(0.1, tiempo_restante))
+                tiempo_restante -= 0.1
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error en streaming: {e}")
+            return False
+
 
     async def _generar_audio(self, texto):
         """Genera audio TTS"""

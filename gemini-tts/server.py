@@ -150,6 +150,58 @@ def synthesize():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+# // STREAMING
+
+@app.route('/stream', methods=['POST'])
+def stream_audio():
+    """
+    Genera audio con Chirp3-HD y streaming.
+    Retorna chunks de audio mientras se generan.
+    """
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
+        
+        text = sanitizar_texto(text)
+        
+        print(f"🎤 [STREAM] Generando: '{text[:50]}...'", flush=True)
+        
+        streaming_config = texttospeech.StreamingSynthesizeConfig(
+            voice=texttospeech.VoiceSelectionParams(
+                language_code='es-US',
+                name='es-US-Chirp3-HD-Fenrir',
+            )
+        )
+        
+        config_request = texttospeech.StreamingSynthesizeRequest(
+            streaming_config=streaming_config
+        )
+        
+        def request_generator():
+            yield config_request
+            yield texttospeech.StreamingSynthesizeRequest(
+                input=texttospeech.StreamingSynthesisInput(text=text)
+            )
+        
+        def generate():
+            for response in client.streaming_synthesize(request_generator()):
+                yield response.audio_content
+        
+        return Response(
+            generate(),
+            mimetype='audio/L16',
+            headers={'Content-Type': 'audio/L16'}
+        )
+        
+    except Exception as e:
+        print(f"❌ Error streaming: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/pregenerar', methods=['POST'])
 def pregenerar():
