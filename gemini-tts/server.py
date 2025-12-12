@@ -82,11 +82,12 @@ def generar_audio(text):
     # Síntesis de voz
     synthesis_input = texttospeech.SynthesisInput(text=text)
     
-    # Configurar voz (Achernar es la mejor voz masculina en español)
+    # Configurar voz (Usando Chirp3-HD para consistencia con el streaming)
     voice = texttospeech.VoiceSelectionParams(
-        language_code="es-ES",
-        name="Achernar",
-        model_name="gemini-2.5-flash-tts"
+        language_code="es-US",  # Tienes es-US en el streaming, usaremos lo mismo
+        name="es-US-Chirp3-HD-Charon",
+        # Quitamos model_name explícito o usamos el correspondiente si es necesario, 
+        # pero para Chirp suele bastar con el nombre completo.
     )
     
     # Audio config optimizado para telefonía
@@ -122,6 +123,29 @@ def generar_audio(text):
     print(f"✅ Audio generado: {len(audio_data)} bytes", flush=True)
     
     return audio_data
+
+
+MULETILLAS = [
+    "Mmm...",
+    "A ver...",
+    "Déjame revisar...",
+    "Un momento...",
+    "Claro...",
+]
+
+def pregenerar_muletillas():
+    """Pre-genera audios de muletillas al iniciar el servidor"""
+    print("🎤 Pre-generando muletillas...", flush=True)
+    for texto in MULETILLAS:
+        try:
+            generar_audio(texto)
+            print(f"  ✓ '{texto}'", flush=True)
+        except Exception as e:
+            print(f"  ✗ Error con '{texto}': {e}", flush=True)
+    print(f"✅ Muletillas listas ({len(MULETILLAS)})", flush=True)
+
+# Ejecutar al importar
+pregenerar_muletillas()
 
 
 @app.route('/synthesize', methods=['POST'])
@@ -172,7 +196,7 @@ def stream_audio():
         streaming_config = texttospeech.StreamingSynthesizeConfig(
             voice=texttospeech.VoiceSelectionParams(
                 language_code='es-US',
-                name='es-US-Chirp3-HD-Fenrir',
+                name='es-US-Chirp3-HD-Charon',
             )
         )
         
@@ -259,9 +283,29 @@ def health():
         "status": "ok",
         "service": "gemini-tts",
         "model": "gemini-2.5-flash-tts",
-        "voice": "Achernar",
+        "voice": "Charon",
         "cache_size": len(audio_cache)
     })
+
+@app.route('/muletilla', methods=['GET'])
+def get_muletilla():
+    """Retorna audio de una muletilla aleatoria (desde cache)"""
+    import random
+    
+    texto = random.choice(MULETILLAS)
+    
+    try:
+        audio_data = generar_audio(texto)  # Viene del cache
+        print(f"🎯 Muletilla servida: '{texto}'", flush=True)
+        
+        return Response(
+            audio_data,
+            mimetype='audio/mpeg',
+            headers={'Content-Type': 'audio/mpeg'}
+        )
+    except Exception as e:
+        print(f"❌ Error sirviendo muletilla: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':

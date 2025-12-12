@@ -2,6 +2,7 @@ import asyncio
 import logging
 import requests
 import re
+import aiohttp
 from app.tts import TextToSpeech
 from app.stt import get_stt
 #from app.database import EmployeeRepository
@@ -17,6 +18,15 @@ from app.prompts import (
 from app.postgres_db import get_postgres_db
 
 logger = logging.getLogger("CallAgent")
+
+# Mapeo de categorías a muletillas contextuales
+SMART_FILLERS = {
+    "salario": "Entiendo que quieras saber sobre la remuneración...",
+    "horario": "A ver, déjame confirmarte el horario...",
+    "ubicacion": "La dirección exacta es...",
+    "primer_dia": "Sobre tu primer día...",
+    "general": "Mmm, déjame ver..." # Default
+}
 
 
 class CallAgent:
@@ -84,6 +94,29 @@ class CallAgent:
         self.intentos_confirmacion = 0
         self.MAX_INTENTOS = 3
         self.resultado_final = None
+
+    async def _reproducir_muletilla(self, categoria: str = "general"):
+        """Reproduce una muletilla contextual"""
+        try:
+            # Seleccionar texto según categoría
+            texto_filler = SMART_FILLERS.get(categoria, SMART_FILLERS["general"])
+            logger.info(f"🤔 Filler: '{texto_filler}' (Cat: {categoria})")
+            # Usar synthesize en lugar de /muletilla para pedir el texto exacto
+            # NOTA: Esto usará el cache del servidor TTL si ya se generó antes
+            async with aiohttp.ClientSession() as session:
+                payload = {"text": texto_filler}
+                async with session.post(f"{self.tts.tts_url}/synthesize", json=payload) as response:
+                    if response.status == 200:
+                        audio_mp3 = await response.read()
+                        pcm_data = self._mp3_to_pcm(audio_mp3)
+                        
+                        # Reproducir (lógica existente...)
+                        for i in range(0, len(pcm_data), 1024):
+                            if self.ws.client_state.name != "CONNECTED": return
+                            await self.ws.send_bytes(pcm_data[i:i+1024])
+                            await asyncio.sleep(0.002)
+        except Exception as e:
+            logger.warning(f"⚠️ Muletilla falló: {e}")
 
     def _cargar_empleado_postgres(self):
         """Carga datos del empleado desde PostgreSQL"""
@@ -304,8 +337,11 @@ class CallAgent:
         
         # 2. Registrar pregunta
         self.intent_detector.registrar_pregunta(self.duda_actual)
+
+        # 3. Reproducir muletilla mientras el LLM piensa
+        await self._reproducir_muletilla(categoria)
         
-        # 3. Generar respuesta con LLM (siempre)
+        # 4. Generar respuesta con LLM (siempre)
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
             
@@ -336,12 +372,12 @@ class CallAgent:
             logger.error(f"❌ Error LLM: {e}")
             respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
         
-        # 4. Reproducir respuesta
+        # 5. Reproducir respuesta
         if not await self._hablar_con_streaming_real(respuesta):
             self.state = CallState.FINALIZADO
             return
         
-        # 5. Preguntar si hay más dudas
+        # 6. Preguntar si hay más dudas
         if not await self._hablar_frases([get_pregunta_mas_dudas()]):
             self.state = CallState.FINALIZADO
             return
