@@ -25,7 +25,7 @@ services:
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
       #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
       - WHISPER_DEVICE=cuda
-      - WHISPER_MODEL=base 
+      - WHISPER_MODEL=small
 
       - SQLSERVER_HOST=${SQLSERVER_HOST}
       - SQLSERVER_PORT=${SQLSERVER_PORT}

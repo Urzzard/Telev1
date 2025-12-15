@@ -16,6 +16,8 @@ from app.prompts import (
     get_system_prompt_llm, get_pregunta_mas_dudas
 )
 from app.postgres_db import get_postgres_db
+from app.vad import VoiceActivityDetector
+import numpy as np
 
 logger = logging.getLogger("CallAgent")
 
@@ -94,6 +96,9 @@ class CallAgent:
         self.intentos_confirmacion = 0
         self.MAX_INTENTOS = 3
         self.resultado_final = None
+
+        self.intent_detector = IntentDetector()
+        self.vad = VoiceActivityDetector(sample_rate=8000)
 
     async def _reproducir_muletilla(self, categoria: str = "general"):
         """Reproduce una muletilla contextual"""
@@ -458,58 +463,45 @@ class CallAgent:
         
         logger.info("✅ Respuesta humana confirmada")
         return False
+        
 
     async def _escuchar_respuesta(self, timeout: float = 6.0):
-        """Escucha respuesta del usuario con mejor timing"""
-        import numpy as np
+        """Escucha respuesta del usuario usando Silero VAD"""
         
-        # Pequeño delay para que el usuario procese lo que escuchó
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
         
         buffer = bytearray()
-        silencio_consecutivo = 0
-        max_silencio = 20  # ~2 segundos de silencio para considerar fin de frase
-        frames_con_voz = 0
+        self.vad.reset()
         tiempo_inicio = asyncio.get_event_loop().time()
         
-        logger.info("👂 Escuchando respuesta...")
+        logger.info("👂 Escuchando respuesta (Silero VAD)...")
         
         while (asyncio.get_event_loop().time() - tiempo_inicio) < timeout:
             try:
-                # Verificar conexión
                 if self.ws.client_state.name != "CONNECTED":
-                    logger.warning("📴 WebSocket desconectado durante escucha")
+                    logger.warning("📴 WebSocket desconectado")
                     return None
                 
                 data = await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.1)
                 buffer.extend(data)
                 
-                # VAD simple
-                chunk = np.frombuffer(data, dtype=np.int16)
-                volumen = np.abs(chunk).mean()
+                # Usar Silero VAD
+                resultado = self.vad.process_chunk(data)
                 
-                if volumen > 100:  # Detectamos voz
-                    silencio_consecutivo = 0
-                    frames_con_voz += 1
-                else:
-                    silencio_consecutivo += 1
-                
-                # Si detectamos voz Y luego silencio prolongado, procesar
-                if frames_con_voz > 5 and silencio_consecutivo > max_silencio:
-                    logger.info(f"🎤 Fin de frase detectado (voz: {frames_con_voz} frames)")
+                if resultado["speech_ended"] and len(buffer) > 4000:
+                    logger.info(f"🎤 Fin de voz (conf: {resultado['confidence']:.2f}, max: {resultado.get('max_confidence', 0):.2f})")
                     break
                     
             except asyncio.TimeoutError:
-                silencio_consecutivo += 1
-                if frames_con_voz > 5 and silencio_consecutivo > max_silencio:
+                # Verificar si ya terminó de hablar
+                if self.vad.speech_started and self.vad.silence_frames >= 15:
                     break
             except Exception as e:
                 logger.error(f"❌ Error escuchando: {e}")
                 return None
         
-        # Verificar que capturamos suficiente audio con voz
-        if len(buffer) < 4000 or frames_con_voz < 3:
-            logger.warning(f"⚠️ Audio insuficiente (buffer: {len(buffer)}, voz: {frames_con_voz} frames)")
+        if len(buffer) < 4000 or not self.vad.speech_started:
+            logger.warning(f"⚠️ Audio insuficiente o sin voz detectada")
             return None
         
         texto = await self.stt.transcribe(bytes(buffer))

@@ -22,7 +22,7 @@ def get_stt():
 
 class SpeechToText:
     def __init__(self):
-        self.model_size = os.getenv("WHISPER_MODEL", "base")
+        self.model_size = os.getenv("WHISPER_MODEL", "small")
         self.device = "cuda" if os.getenv("USE_CUDA", "true").lower() == "true" else "cpu"
         self.model = None
         self.executor = ThreadPoolExecutor(max_workers=2)

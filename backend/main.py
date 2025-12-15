@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from app.stt import get_stt
 from app.llm import warmup_llm
 from app.postgres_db import get_postgres_db
+from app.vad import get_vad
 import requests
 import logging
 
@@ -17,6 +18,9 @@ async def lifespan(app: FastAPI):
     
     logger.info("🎤 Cargando Whisper...")
     get_stt()
+
+    logger.info("🔊 Cargando Silero VAD...")
+    get_vad()
     
     logger.info("🧠 Haciendo warmup del LLM...")
     await warmup_llm()
