@@ -70,7 +70,10 @@ class SpeechToText:
                 tmp_file, 
                 fp16=(self.device == "cuda"),
                 language="es",
-                initial_prompt="Conversación telefónica en español. Respuestas cortas: sí, no, hola, gracias."
+                initial_prompt="Llamada telefónica en español peruano. Empresa Seils Land. Empleado nuevo consulta sobre: horario de trabajo, dirección de oficina, documentos para el primer día. Ubicación: Jirón Horacio Cachay Díaz 393, La Victoria, Lima. Horario: 9am a 6pm. Palabras frecuentes: buenos días, buenas tardes, sí claro, perfecto, entendido, muchas gracias, de acuerdo, por favor, recursos humanos, RRHH, DNI.",
+                temperature=0.0,
+                no_speech_threshold=0.5,
+                condition_on_previous_text=False
             )
             texto = result["text"].strip()
             

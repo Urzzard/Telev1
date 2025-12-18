@@ -100,6 +100,9 @@ class CallAgent:
         self.intent_detector = IntentDetector()
         self.vad = VoiceActivityDetector(sample_rate=8000)
 
+        self.barge_in_detected = False
+        self.barge_in_audio = bytearray()
+
     async def _reproducir_muletilla(self, categoria: str = "general"):
         """Reproduce una muletilla contextual"""
         try:
@@ -391,10 +394,10 @@ class CallAgent:
 
     async def _estado_despedida_ok(self):
         """Despedida exitosa"""
-        await self._hablar_frases([get_despedida_ok()])
+        # Desactivar barge-in para la despedida final
+        await self._hablar_sin_barge_in(get_despedida_ok())
         await asyncio.sleep(0.5)
         self._actualizar_resultado_postgres("EXITO")
-
         self._colgar()
         self.state = CallState.FINALIZADO
 
@@ -469,9 +472,22 @@ class CallAgent:
         """Escucha respuesta del usuario usando Silero VAD"""
         
         await asyncio.sleep(0.3)
+    
+        # Usar audio pre-capturado del barge-in si existe
+        if self.barge_in_detected and len(self.barge_in_audio) > 16000:  # Mínimo 1 segundo
+            buffer = bytearray(self.barge_in_audio)
+            logger.info(f"🔄 Usando {len(buffer)} bytes de audio pre-capturado (barge-in)")
+        else:
+            if self.barge_in_detected:
+                logger.info(f"⚠️ Audio pre-capturado muy corto ({len(self.barge_in_audio)} bytes), descartando")
+            buffer = bytearray()
         
-        buffer = bytearray()
+        self.barge_in_audio = bytearray()
+        self.barge_in_detected = False
+        
         self.vad.reset()
+
+
         tiempo_inicio = asyncio.get_event_loop().time()
         
         logger.info("👂 Escuchando respuesta (Silero VAD)...")
@@ -598,10 +614,151 @@ class CallAgent:
         return True
 
 
-    async def _hablar_con_streaming_real(self, texto: str) -> bool:
+    def _es_backchannel(self, texto: str) -> bool:
         """
-        Usa Chirp3-HD con streaming real.
-        El audio empieza a sonar mientras se genera.
+        Detecta si el texto es solo una confirmación/backchannel.
+        Estos NO deben interrumpir la conversación.
+        """
+        if not texto:
+            return True
+        
+        texto_lower = texto.lower().strip()
+        palabras = texto_lower.split()
+        
+        # Lista de backchannels comunes
+        backchannels = [
+            # Confirmaciones simples
+            "ok", "okey", "okay", "vale", "bien", "bueno", "ya",
+            "sí", "si", "ajá", "aja", "mjm", "mhm", "ah",
+            "claro", "dale", "sale", "va",
+            # Confirmaciones elaboradas
+            "perfecto", "genial", "entiendo", "entendido",
+            "de acuerdo", "listo", "correcto", "exacto", "excelente",
+            # Verificaciones de audio
+            "escucha", "escuchá", "me escuchas", "se escucha", 
+            "te escucho", "sí te escucho", "ahora sí",
+            "hola", "aló", "alo", "bueno",
+            # Respuestas cortas
+            "está bien", "esta bien", "muy bien", "qué bien",
+            "ah ok", "ah ya", "ya veo", "ah bueno",
+            # Agradecimientos (NO son preguntas)
+            "gracias", "muchas gracias", "gracias a todos", "ok gracias",
+            "muy amable", "perfecto gracias", "genial gracias",
+        ]
+        
+        # Si el texto completo es un backchannel conocido
+        for bc in backchannels:
+            if texto_lower == bc or texto_lower == bc + ".":
+                return True
+        
+        # Si tiene 3 palabras o menos y no contiene palabras interrogativas
+        if len(palabras) <= 3:
+            interrogativas = ["qué", "que", "cuál", "cual", "cómo", "como", 
+                            "dónde", "donde", "cuándo", "cuando", "por qué",
+                            "quién", "quien", "cuánto", "cuanto"]
+            tiene_pregunta = any(q in texto_lower for q in interrogativas)
+            
+            if not tiene_pregunta:
+                # Verificar si es combinación de backchannels
+                es_solo_backchannels = all(
+                    any(p.startswith(bc) or bc.startswith(p) for bc in backchannels)
+                    for p in palabras
+                )
+                if es_solo_backchannels:
+                    return True
+        
+        return False
+    
+
+    async def _evaluar_barge_in(self) -> bool:
+        """
+        Evalúa si el audio capturado es una pregunta real o solo backchannel.
+        Retorna True si debemos interrumpir, False si ignorar.
+        """
+        if len(self.barge_in_audio) < 8000:  # Menos de 0.5s
+            logger.info(f"⚠️ Audio muy corto ({len(self.barge_in_audio)} bytes), ignorando")
+            return False
+        
+        # Transcribir el audio capturado
+        try:
+            texto = await self.stt.transcribe(bytes(self.barge_in_audio))
+            
+            if not texto or len(texto.strip()) < 2:
+                return False
+            
+            logger.info(f"🎤 Barge-in transcrito: '{texto}'")
+            
+            # Evaluar si es backchannel o pregunta real
+            if self._es_backchannel(texto):
+                return False
+            
+            # Es una pregunta o comentario sustancial
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error transcribiendo barge-in: {e}")
+            return False
+
+
+    async def _monitorear_barge_in(self):
+        """
+        Monitorea audio entrante mientras el TTS habla.
+        NUEVO: Captura completo, transcribe, y evalúa antes de cortar.
+        """
+        vad_monitor = VoiceActivityDetector(sample_rate=8000)
+        frames_con_voz = 0
+        frames_silencio = 0
+        capturando = False
+        
+        while not self.barge_in_detected:
+            try:
+                if self.ws.client_state.name != "CONNECTED":
+                    break
+                
+                data = await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.05)
+                resultado = vad_monitor.process_chunk(data)
+                
+                if resultado["is_speech"] and resultado["confidence"] > 0.5:
+                    frames_con_voz += 1
+                    frames_silencio = 0
+                    self.barge_in_audio.extend(data)
+                    
+                    # Empezar a capturar después de 5 frames de voz
+                    if frames_con_voz >= 5:
+                        capturando = True
+                        
+                else:
+                    frames_silencio += 1
+                    
+                    # Si estábamos capturando y hay silencio, evaluar
+                    if capturando and frames_silencio >= 8:  # ~0.5s de silencio
+                        # Tenemos audio capturado, evaluar si es pregunta real
+                        es_pregunta = await self._evaluar_barge_in()
+                        
+                        if es_pregunta:
+                            logger.info(f"🛑 BARGE-IN confirmado: pregunta detectada")
+                            self.barge_in_detected = True
+                            break
+                        else:
+                            # Era backchannel, resetear y seguir
+                            logger.info(f"👂 Backchannel ignorado, continuando TTS")
+                            self.barge_in_audio = bytearray()
+                            frames_con_voz = 0
+                            frames_silencio = 0
+                            capturando = False
+                            vad_monitor.reset()
+                            
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.warning(f"⚠️ Error en monitor barge-in: {e}")
+                break
+
+
+    async def _hablar_sin_barge_in(self, texto: str) -> bool:
+        """
+        Reproduce audio SIN monitorear barge-in.
+        Usado para despedidas donde no queremos interrupciones.
         """
         import numpy as np
         from scipy import signal
@@ -609,10 +766,10 @@ class CallAgent:
         if self.ws.client_state.name != "CONNECTED":
             return False
         
-        logger.info(f"🎤 [STREAM] Reproduciendo: '{texto[:40]}...'")
+        logger.info(f"🎤 [FINAL] Reproduciendo: '{texto[:40]}...'")
         
         buffer_resample = bytearray()
-        total_bytes_8k = 0  # Para calcular duración
+        total_bytes_8k = 0
         
         try:
             async for chunk in self.tts.synthesize_stream(texto):
@@ -623,7 +780,6 @@ class CallAgent:
                     buffer_resample = buffer_resample[4800:]
                     
                     audio_24k = np.frombuffer(bloque, dtype=np.int16)
-
                     audio_8k = signal.resample_poly(audio_24k, 1, 3)
                     audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
                     
@@ -634,35 +790,110 @@ class CallAgent:
                     total_bytes_8k += len(audio_8k.tobytes())
                     await asyncio.sleep(0.01)
             
-            # Procesar resto del buffer
+            # Procesar resto
             if len(buffer_resample) > 0:
                 audio_24k = np.frombuffer(bytes(buffer_resample), dtype=np.int16)
                 if len(audio_24k) > 3:
-                    
                     audio_8k = signal.resample_poly(audio_24k, 1, 3)
                     audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
-
                     await self.ws.send_bytes(audio_8k.tobytes())
                     total_bytes_8k += len(audio_8k.tobytes())
             
-            # Calcular duración y esperar a que termine de reproducirse
-            # Audio 8000Hz mono 16-bit = 16000 bytes/segundo
+            # Esperar reproducción completa
+            duracion = total_bytes_8k / 16000
+            await asyncio.sleep(duracion)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error en audio final: {e}")
+            return False
+
+
+    async def _hablar_con_streaming_real(self, texto: str) -> bool:
+        """
+        Usa Chirp3-HD con streaming real.
+        NUEVO: Monitorea audio entrante para detectar barge-in.
+        """
+        import numpy as np
+        from scipy import signal
+        
+        if self.ws.client_state.name != "CONNECTED":
+            return False
+        
+        logger.info(f"🎤 [STREAM] Reproduciendo: '{texto[:40]}...'")
+        
+        # Reset estado de barge-in
+        self.barge_in_detected = False
+        self.barge_in_audio = bytearray()
+        
+        buffer_resample = bytearray()
+        total_bytes_8k = 0
+        
+        # Iniciar monitor de barge-in en paralelo
+        monitor_task = asyncio.create_task(self._monitorear_barge_in())
+        
+        try:
+            async for chunk in self.tts.synthesize_stream(texto):
+                # Verificar si usuario interrumpió
+                if self.barge_in_detected:
+                    logger.info("🛑 [STREAM] Cortando por barge-in")
+                    break
+                
+                buffer_resample.extend(chunk)
+                
+                while len(buffer_resample) >= 4800:
+                    bloque = bytes(buffer_resample[:4800])
+                    buffer_resample = buffer_resample[4800:]
+                    
+                    audio_24k = np.frombuffer(bloque, dtype=np.int16)
+                    audio_8k = signal.resample_poly(audio_24k, 1, 3)
+                    audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+                    
+                    if self.ws.client_state.name != "CONNECTED":
+                        return False
+                    
+                    await self.ws.send_bytes(audio_8k.tobytes())
+                    total_bytes_8k += len(audio_8k.tobytes())
+                    await asyncio.sleep(0.01)
+            
+            # Procesar resto del buffer (solo si no hubo barge-in)
+            if not self.barge_in_detected and len(buffer_resample) > 0:
+                audio_24k = np.frombuffer(bytes(buffer_resample), dtype=np.int16)
+                if len(audio_24k) > 3:
+                    audio_8k = signal.resample_poly(audio_24k, 1, 3)
+                    audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+                    await self.ws.send_bytes(audio_8k.tobytes())
+                    total_bytes_8k += len(audio_8k.tobytes())
+            
+            # Calcular duración
             duracion = total_bytes_8k / 16000
             logger.info(f"✅ [STREAM] Enviado {total_bytes_8k} bytes, esperando {duracion:.1f}s")
             
-            # Esperar mientras se reproduce
-            tiempo_restante = duracion
-            while tiempo_restante > 0:
-                if self.ws.client_state.name != "CONNECTED":
-                    return False
-                await asyncio.sleep(min(0.1, tiempo_restante))
-                tiempo_restante -= 0.1
+            # Esperar mientras se reproduce (solo si no hubo barge-in)
+            if not self.barge_in_detected:
+                tiempo_restante = duracion
+                while tiempo_restante > 0:
+                    if self.ws.client_state.name != "CONNECTED":
+                        return False
+                    if self.barge_in_detected:
+                        logger.info("🛑 [STREAM] Barge-in durante espera")
+                        break
+                    await asyncio.sleep(min(0.1, tiempo_restante))
+                    tiempo_restante -= 0.1
             
             return True
             
         except Exception as e:
             logger.error(f"❌ Error en streaming: {e}")
             return False
+        finally:
+            # Cancelar monitor
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
 
 
     async def _generar_audio(self, texto):
