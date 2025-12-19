@@ -477,12 +477,24 @@ class CallAgent:
         
 
     async def _escuchar_respuesta(self, timeout: float = 6.0):
-        """Escucha respuesta del usuario usando Silero VAD"""
+        """Escucha respuesta del usuario usando Silero VAD - CON MEDICIÓN QUIRÚRGICA"""
+        
+        # ========== MEDICIÓN QUIRÚRGICA ==========
+        T_INICIO_METODO = time.time()
+        T_PRIMERA_VOZ = None          # Cuando detecta voz por primera vez
+        T_ULTIMA_VOZ = None           # Último frame con voz
+        T_FIN_ESCUCHA = None          # Cuando decide cortar
+        frames_voz_total = 0          # Frames con voz detectada
+        frames_silencio_final = 0     # Frames de silencio antes de cortar
+        picos_voz = []                # Lista de (timestamp, confianza) para análisis
+        # =========================================
         
         await asyncio.sleep(0.3)
+        T_POST_SLEEP = time.time()
+        logger.info(f"⏱️ [VAD] Sleep inicial: {(T_POST_SLEEP - T_INICIO_METODO)*1000:.0f}ms")
     
         # Usar audio pre-capturado del barge-in si existe
-        if self.barge_in_detected and len(self.barge_in_audio) > 16000:  # Mínimo 1 segundo
+        if self.barge_in_detected and len(self.barge_in_audio) > 16000:
             buffer = bytearray(self.barge_in_audio)
             logger.info(f"🔄 Usando {len(buffer)} bytes de audio pre-capturado (barge-in)")
         else:
@@ -495,10 +507,10 @@ class CallAgent:
         
         self.vad.reset()
 
-
         tiempo_inicio = asyncio.get_event_loop().time()
+        T_INICIO_LOOP = time.time()
         
-        logger.info("👂 Escuchando respuesta (Silero VAD)...")
+        logger.info("👂 [VAD] Escuchando respuesta (Silero VAD)...")
         
         while (asyncio.get_event_loop().time() - tiempo_inicio) < timeout:
             try:
@@ -512,28 +524,85 @@ class CallAgent:
                 # Usar Silero VAD
                 resultado = self.vad.process_chunk(data)
                 
+                # ========== MEDICIÓN: Detectar eventos de voz ==========
+                if resultado["is_speech"]:
+                    T_ULTIMA_VOZ = time.time()
+                    frames_voz_total += 1
+                    
+                    # Registrar primera detección de voz
+                    if T_PRIMERA_VOZ is None:
+                        T_PRIMERA_VOZ = time.time()
+                        tiempo_hasta_voz = (T_PRIMERA_VOZ - T_INICIO_LOOP) * 1000
+                        logger.info(f"🎤 [VAD] ¡VOZ DETECTADA! Latencia hasta voz: {tiempo_hasta_voz:.0f}ms (conf: {resultado['confidence']:.2f})")
+                    
+                    # Registrar picos de confianza alta
+                    if resultado["confidence"] > 0.6:
+                        picos_voz.append((time.time() - T_INICIO_LOOP, resultado["confidence"]))
+                # ========================================================
+                
                 if resultado["speech_ended"] and len(buffer) > 4000:
-                    logger.info(f"🎤 Fin de voz (conf: {resultado['confidence']:.2f}, max: {resultado.get('max_confidence', 0):.2f})")
+                    T_FIN_ESCUCHA = time.time()
+                    frames_silencio_final = self.vad.silence_frames
+                    
+                    # ========== LOG DETALLADO DE FIN ==========
+                    duracion_total = (T_FIN_ESCUCHA - T_INICIO_LOOP) * 1000
+                    duracion_voz = (T_ULTIMA_VOZ - T_PRIMERA_VOZ) * 1000 if T_PRIMERA_VOZ and T_ULTIMA_VOZ else 0
+                    tiempo_silencio = (T_FIN_ESCUCHA - T_ULTIMA_VOZ) * 1000 if T_ULTIMA_VOZ else 0
+                    
+                    logger.info(f"🛑 [VAD] === FIN DE ESCUCHA ===")
+                    logger.info(f"⏱️ [VAD] Duración TOTAL loop: {duracion_total:.0f}ms")
+                    logger.info(f"⏱️ [VAD] Duración de VOZ: {duracion_voz:.0f}ms ({frames_voz_total} frames)")
+                    logger.info(f"⏱️ [VAD] Silencio antes de cortar: {tiempo_silencio:.0f}ms ({frames_silencio_final} frames)")
+                    logger.info(f"⏱️ [VAD] Confianza máx: {resultado.get('max_confidence', 0):.2f}")
+                    # ==========================================
                     break
                     
             except asyncio.TimeoutError:
                 # Verificar si ya terminó de hablar
                 if self.vad.speech_started and self.vad.silence_frames >= 15:
+                    T_FIN_ESCUCHA = time.time()
+                    frames_silencio_final = self.vad.silence_frames
+                    
+                    duracion_total = (T_FIN_ESCUCHA - T_INICIO_LOOP) * 1000
+                    tiempo_silencio = (T_FIN_ESCUCHA - T_ULTIMA_VOZ) * 1000 if T_ULTIMA_VOZ else 0
+                    logger.info(f"🛑 [VAD] Corte por timeout interno")
+                    logger.info(f"⏱️ [VAD] Duración TOTAL: {duracion_total:.0f}ms | Silencio final: {tiempo_silencio:.0f}ms")
                     break
             except Exception as e:
                 logger.error(f"❌ Error escuchando: {e}")
                 return None
         
+        # ========== ANÁLISIS DE PAUSAS ==========
+        if len(picos_voz) >= 2:
+            # Detectar pausas entre picos de voz
+            pausas = []
+            for i in range(1, len(picos_voz)):
+                pausa = (picos_voz[i][0] - picos_voz[i-1][0]) * 1000
+                if pausa > 200:  # Pausas > 200ms son significativas
+                    pausas.append(pausa)
+            
+            if pausas:
+                logger.info(f"📊 [VAD] Pausas detectadas durante habla: {[f'{p:.0f}ms' for p in pausas]}")
+        # ========================================
+        
         if len(buffer) < 4000 or not self.vad.speech_started:
-            logger.warning(f"⚠️ Audio insuficiente o sin voz detectada")
+            T_FIN = time.time()
+            logger.warning(f"⚠️ [VAD] Audio insuficiente ({len(buffer)} bytes) | Tiempo total: {(T_FIN - T_INICIO_METODO)*1000:.0f}ms")
             return None
 
         t_stt_inicio = time.time()
-        
         texto = await self.stt.transcribe(bytes(buffer))
-
         t_stt_fin = time.time()
-        logger.info(f"⏱️ [TIEMPO] Whisper STT: {(t_stt_fin - t_stt_inicio)*1000:.0f}ms | Audio: {len(buffer)} bytes")
+        
+        # ========== RESUMEN FINAL ==========
+        T_FIN_TOTAL = time.time()
+        logger.info(f"⏱️ [TIEMPO] === RESUMEN ESCUCHA ===")
+        logger.info(f"⏱️ [TIEMPO] 1. Sleep inicial: {(T_POST_SLEEP - T_INICIO_METODO)*1000:.0f}ms")
+        logger.info(f"⏱️ [TIEMPO] 2. Loop VAD: {(T_FIN_ESCUCHA - T_INICIO_LOOP)*1000:.0f}ms" if T_FIN_ESCUCHA else "⏱️ [TIEMPO] 2. Loop VAD: timeout")
+        logger.info(f"⏱️ [TIEMPO] 3. Whisper STT: {(t_stt_fin - t_stt_inicio)*1000:.0f}ms")
+        logger.info(f"⏱️ [TIEMPO] TOTAL _escuchar_respuesta: {(T_FIN_TOTAL - T_INICIO_METODO)*1000:.0f}ms")
+        logger.info(f"⏱️ [TIEMPO] Audio capturado: {len(buffer)} bytes ({len(buffer)/16000:.2f}s de audio)")
+        # ===================================
 
         if texto:
             logger.info(f"👤 Usuario: '{texto}'")
