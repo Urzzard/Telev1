@@ -18,6 +18,7 @@ from app.prompts import (
 from app.postgres_db import get_postgres_db
 from app.vad import VoiceActivityDetector
 import numpy as np
+import time
 
 logger = logging.getLogger("CallAgent")
 
@@ -116,7 +117,7 @@ class CallAgent:
                 async with session.post(f"{self.tts.tts_url}/synthesize", json=payload) as response:
                     if response.status == 200:
                         audio_mp3 = await response.read()
-                        pcm_data = self._mp3_to_pcm(audio_mp3)
+                        pcm_data = self._audio_to_pcm(audio_mp3)
                         
                         # Reproducir (lógica existente...)
                         for i in range(0, len(pcm_data), 1024):
@@ -332,10 +333,13 @@ class CallAgent:
 
     async def _estado_responder(self):
         """Responde usando LLM - valida tema antes de responder"""
+        import time
         
         if self.ws.client_state.name != "CONNECTED":
             self.state = CallState.FINALIZADO
             return
+        
+        TIEMPO_INICIO = time.time()
         
         # 1. Validar si es tema permitido
         es_permitido = self.intent_detector.es_tema_permitido(self.duda_actual)
@@ -346,49 +350,53 @@ class CallAgent:
         # 2. Registrar pregunta
         self.intent_detector.registrar_pregunta(self.duda_actual)
 
-        # 3. Reproducir muletilla mientras el LLM piensa
-        await self._reproducir_muletilla(categoria)
+        # 3. Muletilla deshabilitada temporalmente (tiene bug)
+        # await self._reproducir_muletilla(categoria)
         
-        # 4. Generar respuesta con LLM (siempre)
+        # 4. Generar respuesta con LLM
+        t_llm_inicio = time.time()
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
             
-            # Agregar pregunta actual al historial
             self.historial_llm.append({
                 "role": "user", 
                 "content": self.duda_actual
             })
             
-            # Construir mensajes con historial completo
             messages = [{"role": "system", "content": system_prompt}] + self.historial_llm
             
-            logger.info(f"🤖 Consultando LLM (historial: {len(self.historial_llm)} msgs): '{self.duda_actual[:50]}...'")
             respuesta = await self.llm.generate_response(messages)
             
             if not respuesta or len(respuesta) < 5:
                 respuesta = "Disculpa, no entendí tu pregunta. ¿Podrías repetirla?"
             
-            # Guardar respuesta en historial
             self.historial_llm.append({
                 "role": "assistant",
                 "content": respuesta
             })
             
-            logger.info(f"🤖 LLM respondió: '{respuesta}'")
-            
         except Exception as e:
             logger.error(f"❌ Error LLM: {e}")
             respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
         
+        t_llm_fin = time.time()
+        logger.info(f"⏱️ [TIEMPO] LLM: {(t_llm_fin - t_llm_inicio)*1000:.0f}ms")
+        
         # 5. Reproducir respuesta
+        t_tts_inicio = time.time()
         if not await self._hablar_con_streaming_real(respuesta):
             self.state = CallState.FINALIZADO
             return
+        t_tts_fin = time.time()
+        logger.info(f"⏱️ [TIEMPO] TTS+Reproducción: {(t_tts_fin - t_tts_inicio)*1000:.0f}ms")
         
         # 6. Preguntar si hay más dudas
         if not await self._hablar_frases([get_pregunta_mas_dudas()]):
             self.state = CallState.FINALIZADO
             return
+        
+        TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
+        logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
         
         self.state = CallState.ESPERAR_DUDAS
 
@@ -519,8 +527,14 @@ class CallAgent:
         if len(buffer) < 4000 or not self.vad.speech_started:
             logger.warning(f"⚠️ Audio insuficiente o sin voz detectada")
             return None
+
+        t_stt_inicio = time.time()
         
         texto = await self.stt.transcribe(bytes(buffer))
+
+        t_stt_fin = time.time()
+        logger.info(f"⏱️ [TIEMPO] Whisper STT: {(t_stt_fin - t_stt_inicio)*1000:.0f}ms | Audio: {len(buffer)} bytes")
+
         if texto:
             logger.info(f"👤 Usuario: '{texto}'")
         return texto
@@ -905,7 +919,7 @@ class CallAgent:
             if not audio_mp3:
                 return None
             
-            pcm_data = self._mp3_to_pcm(audio_mp3)
+            pcm_data = self._audio_to_pcm(audio_mp3)
             duracion = len(pcm_data) / self.BYTES_PER_SECOND
             return (pcm_data, duracion)
         except Exception as e:
@@ -958,8 +972,8 @@ class CallAgent:
         
         return texto_limpio
 
-    def _mp3_to_pcm(self, audio_bytes):
-        """Convierte MP3 a PCM"""
+    def _audio_to_pcm(self, audio_bytes):
+        """Convierte audio (MP3 o WAV) a PCM 8kHz mono"""
         import subprocess
         process = subprocess.Popen(
             ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '8000', 'pipe:1'],

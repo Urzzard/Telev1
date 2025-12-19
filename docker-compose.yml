@@ -21,6 +21,8 @@ services:
       - TZ=America/Lima
       - OLLAMA_URL=http://ollama:11434
       - TTS_URL=http://gemini-tts:5003
+      - TTS_BACKEND=xtts
+      - XTTS_URL=http://xtts:8020
       - SIP_URL=http://sip-service:8000
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
       #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
@@ -43,6 +45,7 @@ services:
       - sip-service
       - ollama
       - gemini-tts
+      - xtts
       - postgres
     deploy:
       resources:
@@ -65,6 +68,28 @@ services:
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gemini-tts.json
     restart: always
+
+  xtts:
+    build: ./xtts-service
+    container_name: xtts_server
+    ports:
+      - "8020:8020"
+    volumes:
+      - ./xtts-service/models:/xtts_models
+      - ./xtts-service/output:/output
+      - ./xtts-service/speakers:/speakers
+    environment:
+      - COQUI_TOS_AGREED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest

@@ -12,20 +12,18 @@ env/
 .env.*
 
 # --- Credenciales de Google (Gemini TTS) ---
-# Ignoramos el archivo JSON de credenciales donde sea que esté
 gemini-tts.json
 */gemini-tts.json
 backend/gemini-tts.json
 backend/test/
 data/
 gemini-tts/gemini-tts.json
+backups/
 
 # --- Credenciales SIP (Baresip) ---
-# Ignoramos el archivo con usuario y contraseña del proveedor
 sip-service/accounts
 
 # --- Archivos de Audio Temporales ---
-# Evita subir grabaciones de prueba o caché de TTS al repo
 *.wav
 *.mp3
 *.raw
@@ -36,7 +34,6 @@ sip-service/accounts
 *.sqlite3
 
 # --- Docker ---
-# Ignorar carpetas de volúmenes si se crearon localmente
 ollama_data/
 whisper_cache/
 tts_cache/
@@ -47,6 +44,13 @@ tts_cache/
 .DS_Store
 Thumbs.db
 
-# --- DATABASE
-
+# --- DATABASE ---
 database/data/
+
+# --- XTTS Service ---
+xtts-service/models/
+xtts-service/*.pth
+xtts-service/*.json
+xtts-service/output/
+!xtts-service/Dockerfile
+!xtts-service/docker-compose-standalone.yml
