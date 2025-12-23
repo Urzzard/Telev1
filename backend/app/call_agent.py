@@ -489,10 +489,6 @@ class CallAgent:
         picos_voz = []                # Lista de (timestamp, confianza) para análisis
         # =========================================
         
-        await asyncio.sleep(0.3)
-        T_POST_SLEEP = time.time()
-        logger.info(f"⏱️ [VAD] Sleep inicial: {(T_POST_SLEEP - T_INICIO_METODO)*1000:.0f}ms")
-    
         # Usar audio pre-capturado del barge-in si existe
         if self.barge_in_detected and len(self.barge_in_audio) > 16000:
             buffer = bytearray(self.barge_in_audio)
@@ -540,6 +536,22 @@ class CallAgent:
                         picos_voz.append((time.time() - T_INICIO_LOOP, resultado["confidence"]))
                 # ========================================================
                 
+                # ========== CAMBIO 3: EARLY CUT INTELIGENTE ==========
+                # Si ya hay suficiente voz y silencio moderado, cortar antes del timeout
+                if (self.vad.speech_started and 
+                    frames_voz_total >= 50 and      # ~1.6s de voz detectada
+                    self.vad.silence_frames >= 6 and  # ~400ms de silencio
+                    len(buffer) > 32000):            # >2s de audio total
+                    
+                    T_FIN_ESCUCHA = time.time()
+                    frames_silencio_final = self.vad.silence_frames
+                    
+                    duracion_total = (T_FIN_ESCUCHA - T_INICIO_LOOP) * 1000
+                    logger.info(f"⚡ [VAD] EARLY CUT - Suficiente audio capturado")
+                    logger.info(f"⏱️ [VAD] Duración: {duracion_total:.0f}ms | Voz: {frames_voz_total} frames | Silencio: {self.vad.silence_frames} frames")
+                    break
+                # =====================================================
+                
                 if resultado["speech_ended"] and len(buffer) > 4000:
                     T_FIN_ESCUCHA = time.time()
                     frames_silencio_final = self.vad.silence_frames
@@ -559,7 +571,7 @@ class CallAgent:
                     
             except asyncio.TimeoutError:
                 # Verificar si ya terminó de hablar
-                if self.vad.speech_started and self.vad.silence_frames >= 15:
+                if self.vad.speech_started and self.vad.silence_frames >= 10:
                     T_FIN_ESCUCHA = time.time()
                     frames_silencio_final = self.vad.silence_frames
                     
@@ -597,9 +609,8 @@ class CallAgent:
         # ========== RESUMEN FINAL ==========
         T_FIN_TOTAL = time.time()
         logger.info(f"⏱️ [TIEMPO] === RESUMEN ESCUCHA ===")
-        logger.info(f"⏱️ [TIEMPO] 1. Sleep inicial: {(T_POST_SLEEP - T_INICIO_METODO)*1000:.0f}ms")
-        logger.info(f"⏱️ [TIEMPO] 2. Loop VAD: {(T_FIN_ESCUCHA - T_INICIO_LOOP)*1000:.0f}ms" if T_FIN_ESCUCHA else "⏱️ [TIEMPO] 2. Loop VAD: timeout")
-        logger.info(f"⏱️ [TIEMPO] 3. Whisper STT: {(t_stt_fin - t_stt_inicio)*1000:.0f}ms")
+        logger.info(f"⏱️ [TIEMPO] 1. Loop VAD: {(T_FIN_ESCUCHA - T_INICIO_LOOP)*1000:.0f}ms" if T_FIN_ESCUCHA else "⏱️ [TIEMPO] 1. Loop VAD: timeout")
+        logger.info(f"⏱️ [TIEMPO] 2. Whisper STT: {(t_stt_fin - t_stt_inicio)*1000:.0f}ms")
         logger.info(f"⏱️ [TIEMPO] TOTAL _escuchar_respuesta: {(T_FIN_TOTAL - T_INICIO_METODO)*1000:.0f}ms")
         logger.info(f"⏱️ [TIEMPO] Audio capturado: {len(buffer)} bytes ({len(buffer)/16000:.2f}s de audio)")
         # ===================================
@@ -607,20 +618,6 @@ class CallAgent:
         if texto:
             logger.info(f"👤 Usuario: '{texto}'")
         return texto
-
-    # async def _hablar_frases(self, frases: list) -> bool:
-    #     """Genera y reproduce frases en paralelo"""
-    #     logger.info(f"🎨 Generando {len(frases)} audios...")
-        
-    #     tareas = [self._generar_audio(f) for f in frases]
-    #     resultados = await asyncio.gather(*tareas)
-    #     audios = [r for r in resultados if r is not None]
-        
-    #     for pcm_data, duracion in audios:
-    #         if not await self._reproducir(pcm_data, duracion):
-    #             return False
-        
-    #     return True
 
     async def _hablar_frases(self, frases: list) -> bool:
         """Reproduce frases usando streaming real"""

@@ -95,7 +95,7 @@ class VoiceActivityDetector:
                 self.speech_started = True
         else:
             self.silence_frames += 1
-            if self.speech_started and self.silence_frames >= 15:
+            if self.speech_started and self.silence_frames >= 10:
                 speech_ended = True
         
         return {
