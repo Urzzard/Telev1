@@ -6,14 +6,31 @@ from app.postgres_db import get_postgres_db
 from app.vad import get_vad
 import requests
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Main")
+
+_keepalive_task = None
+
+async def llm_keepalive_loop():
+    """Mantiene el LLM caliente haciendo pings cada 2 minutos"""
+    from app.llm import get_llm
+    llm = get_llm()
+    
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await llm.keepalive()
+        except Exception as e:
+            logger.warning(f"⚠️ Error en keepalive loop: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup y shutdown del servidor"""
+    global _keepalive_task
+    
     logger.info("🚀 Iniciando servicios...")
     
     logger.info("🎤 Cargando Whisper...")
@@ -25,9 +42,19 @@ async def lifespan(app: FastAPI):
     logger.info("🧠 Haciendo warmup del LLM...")
     await warmup_llm()
     
+    logger.info("🔥 Iniciando LLM keepalive task...")
+    _keepalive_task = asyncio.create_task(llm_keepalive_loop())
+    
     logger.info("✅ Todos los servicios listos!")
     
     yield
+    
+    if _keepalive_task:
+        _keepalive_task.cancel()
+        try:
+            await _keepalive_task
+        except asyncio.CancelledError:
+            pass
     
     logger.info("👋 Cerrando servicios...")
 

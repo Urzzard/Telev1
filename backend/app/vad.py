@@ -91,11 +91,11 @@ class VoiceActivityDetector:
         if is_speech:
             self.speech_frames += 1
             self.silence_frames = 0
-            if self.speech_frames >= 3 and not self.speech_started:
+            if self.speech_frames >= 2 and not self.speech_started:
                 self.speech_started = True
         else:
             self.silence_frames += 1
-            if self.speech_started and self.silence_frames >= 10:
+            if self.speech_started and self.silence_frames >= 8:
                 speech_ended = True
         
         return {

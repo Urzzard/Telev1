@@ -64,6 +64,26 @@ class LLMClient:
             logger.warning(f"⚠️ Warmup falló: {e}")
         return False
 
+    async def keepalive(self):
+        """Ping mínimo para mantener el modelo en GPU"""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": "ok"}],
+                        "stream": False,
+                        "options": {"num_predict": 1}
+                    }
+                )
+                if response.status_code == 200:
+                    logger.debug("🔥 LLM keepalive OK")
+                    return True
+        except Exception as e:
+            logger.warning(f"⚠️ LLM keepalive falló: {e}")
+        return False
+
     async def generate_response(self, messages: list) -> str:
         """Genera respuesta del LLM"""
         try:
@@ -75,8 +95,9 @@ class LLMClient:
                         "messages": messages,
                         "stream": False,
                         "options": {
-                            "num_predict": 50,
-                            "temperature": 0.7
+                            "num_predict": 80,
+                            "temperature": 0.7,
+                            "stop": ["\n\n", "---", "===", "DATOS", "REGLAS"]
                         }
                     }
                 )
@@ -106,6 +127,34 @@ class LLMClient:
         
         # Eliminar emojis
         texto = re.sub(r'[🌟😊👋🎉✨💼📧🏢⏰📍]', '', texto)
+
+        # ========== NUEVO: Detectar prompt leak ==========
+        patrones_leak = [
+            r'═{3,}',
+            r'-{5,}',
+            r'DATOS DEL EMPLEADO',
+            r'REGLAS ESTRICTAS',
+            r'TEMAS QUE NO PUEDES',
+            r'system prompt',
+            r'asistente telefónica',
+            r'SOLO RESPOND',
+            r'role.*user',
+            r'role.*assistant',
+        ]
+        
+        for patron in patrones_leak:
+            if re.search(patron, texto, re.IGNORECASE):
+                logger.warning(f"⚠️ PROMPT LEAK detectado, usando respuesta genérica")
+                return "Disculpa, no entendí bien tu pregunta. ¿Podrías repetirla?"
+        
+        if len(texto) > 200:
+            texto_corto = texto[:200]
+            ultimo_punto = max(texto_corto.rfind('.'), texto_corto.rfind(','))
+            if ultimo_punto > 50:
+                texto = texto[:ultimo_punto + 1]
+            else:
+                texto = texto_corto + "..."
+            logger.warning(f"⚠️ Respuesta truncada a {len(texto)} chars")
         
         # Eliminar líneas vacías múltiples
         texto = re.sub(r'\n\s*\n', '\n', texto)

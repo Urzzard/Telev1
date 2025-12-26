@@ -178,6 +178,7 @@ class CallAgent:
     async def iniciar_conversacion(self):
         """Flujo principal usando máquina de estados"""
         logger.info(f"📞 Iniciando llamada para {self.nombre}")
+        await self.llm.keepalive()
         await asyncio.sleep(0.5)
         
         llamada_completada = False
@@ -539,9 +540,9 @@ class CallAgent:
                 # ========== CAMBIO 3: EARLY CUT INTELIGENTE ==========
                 # Si ya hay suficiente voz y silencio moderado, cortar antes del timeout
                 if (self.vad.speech_started and 
-                    frames_voz_total >= 50 and      # ~1.6s de voz detectada
-                    self.vad.silence_frames >= 6 and  # ~400ms de silencio
-                    len(buffer) > 32000):            # >2s de audio total
+                    frames_voz_total >= 15 and      # ~1.6s de voz detectada
+                    self.vad.silence_frames >= 5 and  # ~400ms de silencio
+                    len(buffer) > 16000):            # >2s de audio total
                     
                     T_FIN_ESCUCHA = time.time()
                     frames_silencio_final = self.vad.silence_frames
