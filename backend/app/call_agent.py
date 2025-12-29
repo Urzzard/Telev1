@@ -491,17 +491,33 @@ class CallAgent:
         # =========================================
         
         # Usar audio pre-capturado del barge-in si existe
-        if self.barge_in_detected and len(self.barge_in_audio) > 16000:
-            buffer = bytearray(self.barge_in_audio)
-            logger.info(f"🔄 Usando {len(buffer)} bytes de audio pre-capturado (barge-in)")
-        else:
-            if self.barge_in_detected:
-                logger.info(f"⚠️ Audio pre-capturado muy corto ({len(self.barge_in_audio)} bytes), descartando")
-            buffer = bytearray()
+        # if self.barge_in_detected and len(self.barge_in_audio) > 16000:
+        #     buffer = bytearray(self.barge_in_audio)
+        #     logger.info(f"🔄 Usando {len(buffer)} bytes de audio pre-capturado (barge-in)")
+        # else:
+        #     if self.barge_in_detected:
+        #         logger.info(f"⚠️ Audio pre-capturado muy corto ({len(self.barge_in_audio)} bytes), descartando")
+        #     buffer = bytearray()
         
+        # self.barge_in_audio = bytearray()
+        # self.barge_in_detected = False
+        
+        if self.barge_in_detected:
+            logger.info("🔇 [VAD] Descartando eco post-barge-in (300ms)")
+            tiempo_descarte = asyncio.get_event_loop().time()
+            while (asyncio.get_event_loop().time() - tiempo_descarte) < 0.3:
+                try:
+                    await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.05)
+                    # No agregamos al buffer, solo descartamos
+                except asyncio.TimeoutError:
+                    continue
+                except:
+                    break
+
+        buffer = bytearray()
         self.barge_in_audio = bytearray()
         self.barge_in_detected = False
-        
+
         self.vad.reset()
 
         tiempo_inicio = asyncio.get_event_loop().time()
@@ -704,10 +720,14 @@ class CallAgent:
             return True
         
         texto_lower = texto.lower().strip()
-        palabras = texto_lower.split()
+
+        #CUSTIONABLE
+        texto_limpio = texto_lower.rstrip('.,!?')
+
+        palabras = texto_limpio.split()
         
         # Lista de backchannels comunes
-        backchannels = [
+        backchannels_exactos = [
             # Confirmaciones simples
             "ok", "okey", "okay", "vale", "bien", "bueno", "ya",
             "sí", "si", "ajá", "aja", "mjm", "mhm", "ah",
@@ -726,70 +746,87 @@ class CallAgent:
             "gracias", "muchas gracias", "gracias a todos", "ok gracias",
             "muy amable", "perfecto gracias", "genial gracias",
         ]
+
+        if texto_limpio in backchannels_exactos:
+            return True
         
         # Si el texto completo es un backchannel conocido
-        for bc in backchannels:
-            if texto_lower == bc or texto_lower == bc + ".":
-                return True
+        # for bc in backchannels:
+        #     if texto_lower == bc or texto_lower == bc + ".":
+        #         return True
         
         # Si tiene 3 palabras o menos y no contiene palabras interrogativas
-        if len(palabras) <= 3:
-            interrogativas = ["qué", "que", "cuál", "cual", "cómo", "como", 
-                            "dónde", "donde", "cuándo", "cuando", "por qué",
-                            "quién", "quien", "cuánto", "cuanto"]
-            tiene_pregunta = any(q in texto_lower for q in interrogativas)
+        if len(palabras) <= 4:
+            # Palabras interrogativas = NO es backchannel
+            interrogativas = [
+                "qué", "que", "cuál", "cual", "cómo", "como", 
+                "dónde", "donde", "cuándo", "cuando", "por qué",
+                "quién", "quien", "cuánto", "cuanto"
+            ]
+            if any(q in texto_lower for q in interrogativas):
+                return False
             
-            if not tiene_pregunta:
-                # Verificar si es combinación de backchannels
-                es_solo_backchannels = all(
-                    any(p.startswith(bc) or bc.startswith(p) for bc in backchannels)
-                    for p in palabras
-                )
-                if es_solo_backchannels:
-                    return True
+            # Indicadores de querer información = NO es backchannel
+            indicadores_pregunta = [
+                "quisiera", "gustaría", "gustaria", "quiero",
+                "puedes", "podrías", "podrias", "dime", "cuéntame",
+                "explica", "repite", "repetir"
+            ]
+            if any(ind in texto_lower for ind in indicadores_pregunta):
+                return False
+            
+            # Si solo tiene palabras de backchannel/relleno
+            palabras_backchannel = [
+                "ok", "sí", "si", "no", "ya", "ah", "oh", "bueno", "bien",
+                "gracias", "claro", "vale", "perfecto", "genial",
+                "a", "todos", "todo", "para", "por", "muy", "muchas"
+            ]
+            es_solo_backchannels = all(
+                p in palabras_backchannel for p in palabras
+            )
+            if es_solo_backchannels:
+                return True
         
         return False
     
 
-    async def _evaluar_barge_in(self) -> bool:
-        """
-        Evalúa si el audio capturado es una pregunta real o solo backchannel.
-        Retorna True si debemos interrumpir, False si ignorar.
-        """
-        if len(self.barge_in_audio) < 8000:  # Menos de 0.5s
-            logger.info(f"⚠️ Audio muy corto ({len(self.barge_in_audio)} bytes), ignorando")
-            return False
+    # async def _evaluar_barge_in(self) -> bool:
+    #     """
+    #     Evalúa si el audio capturado es una pregunta real o solo backchannel.
+    #     Retorna True si debemos interrumpir, False si ignorar.
+    #     """
+    #     if len(self.barge_in_audio) < 8000:  # Menos de 0.5s
+    #         logger.info(f"⚠️ Audio muy corto ({len(self.barge_in_audio)} bytes), ignorando")
+    #         return False
         
-        # Transcribir el audio capturado
-        try:
-            texto = await self.stt.transcribe(bytes(self.barge_in_audio))
+    #     # Transcribir el audio capturado
+    #     try:
+    #         texto = await self.stt.transcribe(bytes(self.barge_in_audio))
             
-            if not texto or len(texto.strip()) < 2:
-                return False
+    #         if not texto or len(texto.strip()) < 2:
+    #             return False
             
-            logger.info(f"🎤 Barge-in transcrito: '{texto}'")
+    #         logger.info(f"🎤 Barge-in transcrito: '{texto}'")
             
-            # Evaluar si es backchannel o pregunta real
-            if self._es_backchannel(texto):
-                return False
+    #         # Evaluar si es backchannel o pregunta real
+    #         if self._es_backchannel(texto):
+    #             return False
             
-            # Es una pregunta o comentario sustancial
-            return True
+    #         # Es una pregunta o comentario sustancial
+    #         return True
             
-        except Exception as e:
-            logger.warning(f"⚠️ Error transcribiendo barge-in: {e}")
-            return False
+    #     except Exception as e:
+    #         logger.warning(f"⚠️ Error transcribiendo barge-in: {e}")
+    #         return False
 
 
     async def _monitorear_barge_in(self):
         """
-        Monitorea audio entrante mientras el TTS habla.
-        NUEVO: Captura completo, transcribe, y evalúa antes de cortar.
+        PASO 1: Solo detectar voz y marcar para cortar TTS.
+        No captura audio, no transcribe, no evalúa.
         """
         vad_monitor = VoiceActivityDetector(sample_rate=8000)
         frames_con_voz = 0
-        frames_silencio = 0
-        capturando = False
         
         while not self.barge_in_detected:
             try:
@@ -799,36 +836,15 @@ class CallAgent:
                 data = await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.05)
                 resultado = vad_monitor.process_chunk(data)
                 
-                if resultado["is_speech"] and resultado["confidence"] > 0.5:
+                if resultado["is_speech"] and resultado["confidence"] > 0.7:
                     frames_con_voz += 1
-                    frames_silencio = 0
-                    self.barge_in_audio.extend(data)
-                    
-                    # Empezar a capturar después de 5 frames de voz
-                    if frames_con_voz >= 5:
-                        capturando = True
-                        
+                    if frames_con_voz >= 4:  # ~260ms de voz sostenida
+                        logger.info(f"🛑 [BARGE-IN] Voz detectada ({frames_con_voz} frames) - Cortando TTS")
+                        self.barge_in_detected = True
+                        break
                 else:
-                    frames_silencio += 1
-                    
-                    # Si estábamos capturando y hay silencio, evaluar
-                    if capturando and frames_silencio >= 8:  # ~0.5s de silencio
-                        # Tenemos audio capturado, evaluar si es pregunta real
-                        es_pregunta = await self._evaluar_barge_in()
+                    frames_con_voz = 0
                         
-                        if es_pregunta:
-                            logger.info(f"🛑 BARGE-IN confirmado: pregunta detectada")
-                            self.barge_in_detected = True
-                            break
-                        else:
-                            # Era backchannel, resetear y seguir
-                            logger.info(f"👂 Backchannel ignorado, continuando TTS")
-                            self.barge_in_audio = bytearray()
-                            frames_con_voz = 0
-                            frames_silencio = 0
-                            capturando = False
-                            vad_monitor.reset()
-                            
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
@@ -954,12 +970,21 @@ class CallAgent:
             # Esperar mientras se reproduce (solo si no hubo barge-in)
             if not self.barge_in_detected:
                 tiempo_restante = duracion
+                warmup_disparado = False
+                
                 while tiempo_restante > 0:
                     if self.ws.client_state.name != "CONNECTED":
                         return False
                     if self.barge_in_detected:
                         logger.info("🛑 [STREAM] Barge-in durante espera")
                         break
+                    
+                    # NUEVO: Warmup del LLM 2 segundos antes de terminar (si duración > 5s)
+                    if not warmup_disparado and duracion > 5 and tiempo_restante <= 2:
+                        asyncio.create_task(self.llm.keepalive())
+                        warmup_disparado = True
+                        logger.debug("🔥 [STREAM] Warmup LLM disparado")
+                    
                     await asyncio.sleep(min(0.1, tiempo_restante))
                     tiempo_restante -= 0.1
             

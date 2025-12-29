@@ -140,6 +140,13 @@ class LLMClient:
             r'SOLO RESPOND',
             r'role.*user',
             r'role.*assistant',
+            r'\(Recuerda',
+            r'no debes compartir',
+            r'detalles específicos',
+            r'no puedes responder',
+            r'INFORMACIÓN QUE',
+            r'TEMAS QUE NO',
+            r'Estás en llamada con',
         ]
         
         for patron in patrones_leak:
