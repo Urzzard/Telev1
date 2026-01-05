@@ -827,6 +827,7 @@ class CallAgent:
         """
         vad_monitor = VoiceActivityDetector(sample_rate=8000)
         frames_con_voz = 0
+        audio_capturado = bytearray()
         
         while not self.barge_in_detected:
             try:
@@ -838,8 +839,10 @@ class CallAgent:
                 
                 if resultado["is_speech"] and resultado["confidence"] > 0.7:
                     frames_con_voz += 1
-                    if frames_con_voz >= 4:  # ~260ms de voz sostenida
-                        logger.info(f"🛑 [BARGE-IN] Voz detectada ({frames_con_voz} frames) - Cortando TTS")
+                    audio_capturado.extend(data)
+                    if frames_con_voz >= 6:  # ~260ms de voz sostenida
+                        logger.info(f"🛑 [BARGE-IN] Voz detectada ({frames_con_voz} frames, {len(audio_capturado)} bytes) - Cortando TTS")
+                        self.barge_in_audio = audio_capturado
                         self.barge_in_detected = True
                         break
                 else:
@@ -909,8 +912,9 @@ class CallAgent:
 
     async def _hablar_con_streaming_real(self, texto: str) -> bool:
         """
-        Usa Chirp3-HD con streaming real.
+        Usa xttsv2 con streaming real.
         NUEVO: Monitorea audio entrante para detectar barge-in.
+        MEJORADO: Activa barge-in solo después de enviar primeros chunks.
         """
         import numpy as np
         from scipy import signal
@@ -926,20 +930,26 @@ class CallAgent:
         
         buffer_resample = bytearray()
         total_bytes_8k = 0
+        chunks_enviados = 0
         
-        # Iniciar monitor de barge-in en paralelo
-        monitor_task = asyncio.create_task(self._monitorear_barge_in())
+        # NO iniciar monitor aún - esperar a enviar primeros chunks
+        monitor_task = None
         
         try:
             async for chunk in self.tts.synthesize_stream(texto):
-                # Verificar si usuario interrumpió
-                if self.barge_in_detected:
+                # Verificar si usuario interrumpió (solo si monitor está activo)
+                if monitor_task and self.barge_in_detected:
                     logger.info("🛑 [STREAM] Cortando por barge-in")
                     break
                 
                 buffer_resample.extend(chunk)
                 
                 while len(buffer_resample) >= 4800:
+                    # Verificar barge-in solo si monitor está activo
+                    if monitor_task and self.barge_in_detected:
+                        logger.info("🛑 [STREAM] Cortando envío por barge-in")
+                        break
+                    
                     bloque = bytes(buffer_resample[:4800])
                     buffer_resample = buffer_resample[4800:]
                     
@@ -952,6 +962,13 @@ class CallAgent:
                     
                     await self.ws.send_bytes(audio_8k.tobytes())
                     total_bytes_8k += len(audio_8k.tobytes())
+                    chunks_enviados += 1
+                    
+                    # NUEVO: Activar barge-in después del 5to chunk (~300ms de audio)
+                    if chunks_enviados == 5 and monitor_task is None:
+                        logger.info("👂 [STREAM] Activando monitoreo barge-in")
+                        monitor_task = asyncio.create_task(self._monitorear_barge_in())
+                    
                     await asyncio.sleep(0.01)
             
             # Procesar resto del buffer (solo si no hubo barge-in)
@@ -971,6 +988,11 @@ class CallAgent:
             if not self.barge_in_detected:
                 tiempo_restante = duracion
                 warmup_disparado = False
+                
+                # Si no se activó monitor antes (mensaje muy corto), activarlo ahora
+                if monitor_task is None:
+                    logger.info("👂 [STREAM] Activando monitoreo barge-in (mensaje corto)")
+                    monitor_task = asyncio.create_task(self._monitorear_barge_in())
                 
                 while tiempo_restante > 0:
                     if self.ws.client_state.name != "CONNECTED":
@@ -994,12 +1016,13 @@ class CallAgent:
             logger.error(f"❌ Error en streaming: {e}")
             return False
         finally:
-            # Cancelar monitor
-            monitor_task.cancel()
-            try:
-                await monitor_task
-            except asyncio.CancelledError:
-                pass
+            # Cancelar monitor si existe
+            if monitor_task:
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
 
 
     async def _generar_audio(self, texto):
