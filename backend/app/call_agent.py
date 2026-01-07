@@ -162,13 +162,31 @@ class CallAgent:
 
     
     def _formatear_fecha(self, fecha_str: str) -> str:
-        """Convierte '2025-12-02' a '02/12/2025' para que el TTS lo lea bien"""
+        """Convierte '2025-12-02' a '2 de diciembre del 2025' para TTS natural"""
         try:
             from datetime import datetime
             
+            meses = [
+                "enero", "febrero", "marzo", "abril", "mayo", "junio",
+                "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+            ]
+            
             if fecha_str and "-" in str(fecha_str):
                 fecha = datetime.strptime(str(fecha_str), "%Y-%m-%d")
-                return fecha.strftime("%d/%m/%Y")
+                dia = fecha.day  # Sin cero inicial
+                mes = meses[fecha.month - 1]
+                año = fecha.year
+                return f"{dia} de {mes} del {año}"
+            
+            # Si ya viene en formato dd/mm/yyyy, también convertir
+            if fecha_str and "/" in str(fecha_str):
+                partes = str(fecha_str).split("/")
+                if len(partes) == 3:
+                    dia = int(partes[0])
+                    mes_num = int(partes[1])
+                    año = partes[2]
+                    mes = meses[mes_num - 1]
+                    return f"{dia} de {mes} del {año}"
             
             return str(fecha_str) if fecha_str else "pronto"
         except:
@@ -223,8 +241,8 @@ class CallAgent:
         
         finally:
             # Si la llamada no se completó normalmente, marcar como fallido
-            if not llamada_completada and self.state != CallState.FINALIZADO:
-                logger.warning("⚠️ Llamada terminó inesperadamente")
+            if not llamada_completada:
+                logger.warning("⚠️ Llamada terminó sin completar flujo normal")
                 self._actualizar_resultado_postgres("FALLIDO")
         
         logger.info("📞 Llamada finalizada")
@@ -391,10 +409,14 @@ class CallAgent:
         t_tts_fin = time.time()
         logger.info(f"⏱️ [TIEMPO] TTS+Reproducción: {(t_tts_fin - t_tts_inicio)*1000:.0f}ms")
         
-        # 6. Preguntar si hay más dudas
-        if not await self._hablar_frases([get_pregunta_mas_dudas()]):
-            self.state = CallState.FINALIZADO
-            return
+        # 6. Preguntar si hay más dudas (SOLO si no hubo barge-in)
+        if not self.barge_in_detected:
+            if not await self._hablar_frases([get_pregunta_mas_dudas()]):
+                self.state = CallState.FINALIZADO
+                return
+        else:
+            logger.info("⏩ [FLUJO] Saltando pregunta de dudas (hubo barge-in)")
+
         
         TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
         logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
@@ -491,30 +513,18 @@ class CallAgent:
         # =========================================
         
         # Usar audio pre-capturado del barge-in si existe
-        # if self.barge_in_detected and len(self.barge_in_audio) > 16000:
-        #     buffer = bytearray(self.barge_in_audio)
-        #     logger.info(f"🔄 Usando {len(buffer)} bytes de audio pre-capturado (barge-in)")
-        # else:
-        #     if self.barge_in_detected:
-        #         logger.info(f"⚠️ Audio pre-capturado muy corto ({len(self.barge_in_audio)} bytes), descartando")
-        #     buffer = bytearray()
-        
-        # self.barge_in_audio = bytearray()
-        # self.barge_in_detected = False
-        
-        if self.barge_in_detected:
-            logger.info("🔇 [VAD] Descartando eco post-barge-in (300ms)")
-            tiempo_descarte = asyncio.get_event_loop().time()
-            while (asyncio.get_event_loop().time() - tiempo_descarte) < 0.3:
-                try:
-                    await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.05)
-                    # No agregamos al buffer, solo descartamos
-                except asyncio.TimeoutError:
-                    continue
-                except:
-                    break
+        if self.barge_in_detected and len(self.barge_in_audio) > 3200:  # >200ms de audio
+            buffer = bytearray(self.barge_in_audio)
+            logger.info(f"🔄 [VAD] Usando {len(buffer)} bytes pre-capturados del barge-in")
+            
+            # Pequeña pausa para dejar que el TTS termine de sonar en el canal
+            await asyncio.sleep(0.1)
+        else:
+            buffer = bytearray()
+            if self.barge_in_detected:
+                logger.info(f"⚠️ [VAD] Audio barge-in muy corto ({len(self.barge_in_audio)} bytes), descartando")
 
-        buffer = bytearray()
+        # Reset estado barge-in
         self.barge_in_audio = bytearray()
         self.barge_in_detected = False
 

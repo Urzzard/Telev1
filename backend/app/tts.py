@@ -1,6 +1,84 @@
 import aiohttp
 import logging
 import os
+import re
+
+def preparar_texto_para_tts(texto: str) -> str:
+    """
+    Preprocesa texto para que el TTS lo pronuncie naturalmente.
+    Convierte siglas, fechas y URLs a texto pronunciable.
+    """
+    if not texto:
+        return texto
+    
+    # ===== SIGLAS =====
+    texto = re.sub(r'\bRRHH\b', 'Recursos Humanos', texto)
+    texto = re.sub(r'\bR\.R\.H\.H\.?\b', 'Recursos Humanos', texto)
+    texto = re.sub(r'\bDNI\b', 'D N I', texto)
+    
+    # ===== HORARIOS =====
+    texto = re.sub(r'\b9:00\s*(a\.?m\.?)?', '9 de la mañana', texto)
+    texto = re.sub(r'\b18:00\b', '6 de la tarde', texto)
+    texto = re.sub(r'\b6:00\s*(p\.?m\.?)?', '6 de la tarde', texto)
+    texto = re.sub(r'\b13:00\b', '1 de la tarde', texto)
+    texto = re.sub(r'\b14:00\b', '2 de la tarde', texto)
+    
+    # ===== FECHAS dd/mm/yyyy =====
+    def convertir_fecha(match):
+        dia, mes, año = match.groups()
+        meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+                 "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+        try:
+            dia_num = int(dia)
+            mes_num = int(mes)
+            return f"{dia_num} de {meses[mes_num-1]} del {año}"
+        except:
+            return match.group(0)
+    
+    texto = re.sub(r'(\d{1,2})/(\d{1,2})/(\d{4})', convertir_fecha, texto)
+    
+    # ===== URLs - CONVERTIR A TEXTO PRONUNCIABLE =====
+    def url_a_texto(match):
+        url = match.group(0)
+        
+        # Quitar protocolo si existe
+        url = re.sub(r'^https?://', '', url)
+        
+        # Convertir caracteres especiales a palabras
+        resultado = url
+        resultado = resultado.replace('://', ' dos puntos diagonal diagonal ')
+        resultado = resultado.replace(':', ' puerto ')  # Para puertos como :8088
+        resultado = resultado.replace('/', ' diagonal ')
+        resultado = resultado.replace('.', ' punto ')
+        resultado = resultado.replace('-', ' guión ')
+        resultado = resultado.replace('_', ' guión bajo ')
+        resultado = resultado.replace('?', ' signo de interrogación ')
+        resultado = resultado.replace('=', ' igual ')
+        resultado = resultado.replace('&', ' y ')
+        
+        # Convertir números a palabras para mejor pronunciación
+        resultado = re.sub(r'8088', 'ocho cero ocho ocho', resultado)
+        resultado = re.sub(r'(\d)', lambda m: {
+            '0': 'cero', '1': 'uno', '2': 'dos', '3': 'tres', '4': 'cuatro',
+            '5': 'cinco', '6': 'seis', '7': 'siete', '8': 'ocho', '9': 'nueve'
+        }.get(m.group(1), m.group(1)), resultado)
+        
+        # Limpiar espacios múltiples
+        resultado = re.sub(r'\s+', ' ', resultado).strip()
+        
+        return resultado
+    
+    # Detectar URLs (con o sin protocolo)
+    texto = re.sub(
+        r'https?://[^\s,]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.:/\-_?=&]*',
+        url_a_texto,
+        texto
+    )
+    
+    # ===== LIMPIEZA FINAL =====
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    
+    return texto
 
 logger = logging.getLogger("TTS")
 
@@ -88,6 +166,9 @@ class TextToSpeech:
         """
         if not text:
             return
+
+        # NUEVO: Preprocesar texto para TTS natural
+        text = preparar_texto_para_tts(text)
         
         if self.backend == "xtts":
             # XTTS: Fallback a síntesis normal (streaming tiene bugs)

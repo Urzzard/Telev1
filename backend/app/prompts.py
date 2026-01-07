@@ -198,10 +198,10 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
 
                 EJEMPLOS DE RESPUESTAS CORRECTAS:
                 P: ¿Cuál es el horario?
-                R: El horario es de 9 de la mañana a 6 de la tarde, con descanso de 1 a 2.
+                R: El horario es de 9 de la mañana a 6 de la tarde, con descanso de 1 a 2 de la tarde.
 
                 P: ¿Dónde queda la oficina?
-                R: Estamos en Jirón Horacio Cachay Díaz 393, en La Victoria.
+                R: La oficina se encuentra en Jirón Horacio Cachay Díaz 393, La Victoria.
 
                 P: ¿Cuánto voy a ganar?
                 R: Esa información te la dará RRHH cuando llegues.
