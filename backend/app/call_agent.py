@@ -23,13 +23,13 @@ import time
 logger = logging.getLogger("CallAgent")
 
 # Mapeo de categorías a muletillas contextuales
-SMART_FILLERS = {
-    "salario": "Entiendo que quieras saber sobre la remuneración...",
-    "horario": "A ver, déjame confirmarte el horario...",
-    "ubicacion": "La dirección exacta es...",
-    "primer_dia": "Sobre tu primer día...",
-    "general": "Mmm, déjame ver..." # Default
-}
+# SMART_FILLERS = {
+#     "salario": "Entiendo que quieras saber sobre la remuneración...",
+#     "horario": "A ver, déjame confirmarte el horario...",
+#     "ubicacion": "La dirección exacta es...",
+#     "primer_dia": "Sobre tu primer día...",
+#     "general": "Mmm, déjame ver..." # Default
+# }
 
 
 class CallAgent:
@@ -104,26 +104,24 @@ class CallAgent:
         self.barge_in_detected = False
         self.barge_in_audio = bytearray()
 
-    async def _reproducir_muletilla(self, categoria: str = "general"):
-        """Reproduce una muletilla contextual"""
+    async def _reproducir_muletilla(self):
+        """Reproduce una muletilla breve para indicar que estamos escuchando."""
+        import random
+        
+        muletillas = ["Ajá", "Sí", "Claro", "Te escucho"]
+        muletilla = random.choice(muletillas)
+        
+        logger.info(f"💬 [MULETILLA] '{muletilla}'")
+        
         try:
-            # Seleccionar texto según categoría
-            texto_filler = SMART_FILLERS.get(categoria, SMART_FILLERS["general"])
-            logger.info(f"🤔 Filler: '{texto_filler}' (Cat: {categoria})")
-            # Usar synthesize en lugar de /muletilla para pedir el texto exacto
-            # NOTA: Esto usará el cache del servidor TTL si ya se generó antes
-            async with aiohttp.ClientSession() as session:
-                payload = {"text": texto_filler}
-                async with session.post(f"{self.tts.tts_url}/synthesize", json=payload) as response:
-                    if response.status == 200:
-                        audio_mp3 = await response.read()
-                        pcm_data = self._audio_to_pcm(audio_mp3)
-                        
-                        # Reproducir (lógica existente...)
-                        for i in range(0, len(pcm_data), 1024):
-                            if self.ws.client_state.name != "CONNECTED": return
-                            await self.ws.send_bytes(pcm_data[i:i+1024])
-                            await asyncio.sleep(0.002)
+            # Generar audio con XTTS
+            audio_data = await self.tts.synthesize(muletilla)
+            if audio_data and self.ws and self.ws.client_state.name == "CONNECTED":
+                pcm_data = self._audio_to_pcm(audio_data)
+                # Enviar solo 0.5s máximo (8000 bytes a 8kHz mono 16-bit)
+                chunk = pcm_data[:min(len(pcm_data), 8000)]
+                await self.ws.send_bytes(chunk)
+                await asyncio.sleep(0.3)
         except Exception as e:
             logger.warning(f"⚠️ Muletilla falló: {e}")
 
@@ -416,7 +414,8 @@ class CallAgent:
                 return
         else:
             logger.info("⏩ [FLUJO] Saltando pregunta de dudas (hubo barge-in)")
-
+            # Muletilla rápida para que el usuario sepa que lo escuchamos
+            #await self._reproducir_muletilla()
         
         TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
         logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
