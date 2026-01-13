@@ -95,7 +95,7 @@ class LLMClient:
                         "messages": messages,
                         "stream": False,
                         "options": {
-                            "num_predict": 80,
+                            "num_predict": 150,
                             "temperature": 0.7,
                             "stop": ["\n\n", "---", "===", "DATOS", "REGLAS"]
                         }
@@ -128,7 +128,7 @@ class LLMClient:
         # Eliminar emojis
         texto = re.sub(r'[🌟😊👋🎉✨💼📧🏢⏰📍]', '', texto)
 
-        # ========== NUEVO: Detectar prompt leak ==========
+        # ========== Detectar prompt leak ==========
         patrones_leak = [
             r'═{3,}',
             r'-{5,}',
@@ -147,20 +147,66 @@ class LLMClient:
             r'INFORMACIÓN QUE',
             r'TEMAS QUE NO',
             r'Estás en llamada con',
+            r'siguiendo las reglas',
+            r'reglas proporcionadas',
+            r'como asistente', 
         ]
         
         for patron in patrones_leak:
             if re.search(patron, texto, re.IGNORECASE):
                 logger.warning(f"⚠️ PROMPT LEAK detectado, usando respuesta genérica")
                 return "Disculpa, no entendí bien tu pregunta. ¿Podrías repetirla?"
+
+        despedidas = [
+            r'¡?Te deseo un buen día!?',
+            r'¡?Que tengas buen día!?',
+            r'¡?Buen día!?',
+            r'¡?Hasta pronto!?',
+            r'¡?Éxito!?',
+            r'¡?Mucho éxito!?',
+        ]
+
+        for patron in despedidas:
+            texto = re.sub(patron, '', texto, flags=re.IGNORECASE)
         
-        if len(texto) > 200:
-            texto_corto = texto[:200]
-            ultimo_punto = max(texto_corto.rfind('.'), texto_corto.rfind(','))
-            if ultimo_punto > 50:
+        # ========== NUEVO: Truncamiento inteligente ==========
+        MAX_CHARS = 250  # Aumentado de 200 a 250
+        
+        if len(texto) > MAX_CHARS:
+            # Buscar el último punto FINAL de oración (no p.m., a.m., etc.)
+            # Patrón: punto seguido de espacio y mayúscula, o punto final
+            texto_cortado = texto[:MAX_CHARS]
+            
+            # Buscar último punto que termine oración
+            ultimo_punto = -1
+            for i in range(len(texto_cortado) - 1, 0, -1):
+                if texto_cortado[i] == '.':
+                    # Verificar que no sea p.m., a.m., etc.
+                    antes = texto_cortado[max(0, i-2):i].lower()
+                    if antes not in ['p.', 'a.', 'dr', 'sr', 'ra']:
+                        ultimo_punto = i
+                        break
+            
+            if ultimo_punto > 80:  # Al menos 80 chars de contenido
                 texto = texto[:ultimo_punto + 1]
             else:
-                texto = texto_corto + "..."
+                # Si no encontró punto, buscar última coma o punto y coma
+                ultimo_separador = max(
+                    texto_cortado.rfind(','),
+                    texto_cortado.rfind(';'),
+                    texto_cortado.rfind('?'),
+                    texto_cortado.rfind('!')
+                )
+                if ultimo_separador > 80:
+                    texto = texto[:ultimo_separador + 1]
+                else:
+                    # Último recurso: cortar en espacio
+                    ultimo_espacio = texto_cortado.rfind(' ')
+                    if ultimo_espacio > 100:
+                        texto = texto[:ultimo_espacio] + "."
+                    else:
+                        texto = texto_cortado + "."
+            
             logger.warning(f"⚠️ Respuesta truncada a {len(texto)} chars")
         
         # Eliminar líneas vacías múltiples

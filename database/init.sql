@@ -43,7 +43,7 @@ CREATE TABLE configuracion (
 
 -- Valor inicial: último ID procesado
 INSERT INTO configuracion (clave, valor) 
-VALUES ('ultimo_id_externo', '153849');
+VALUES ('ultimo_id_externo', '167225');
 
 -- Índices básicos
 CREATE INDEX idx_empleados_estado ON empleados(estado);

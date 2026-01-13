@@ -10,6 +10,12 @@ def preparar_texto_para_tts(texto: str) -> str:
     """
     if not texto:
         return texto
+
+    # ===== PASO 1: PROTEGER a.m./p.m. antes de cualquier procesamiento =====
+    texto = re.sub(r'(\d{1,2}):(\d{2})\s*a\.?m\.?', r'\1:\2 de la mañana', texto)
+    texto = re.sub(r'(\d{1,2}):(\d{2})\s*p\.?m\.?', r'\1:\2 de la tarde', texto)
+    texto = re.sub(r'\ba\.?m\.?\b', 'de la mañana', texto)
+    texto = re.sub(r'\bp\.?m\.?\b', 'de la tarde', texto)
     
     # ===== SIGLAS =====
     texto = re.sub(r'\bRRHH\b', 'Recursos Humanos', texto)
@@ -40,39 +46,29 @@ def preparar_texto_para_tts(texto: str) -> str:
     # ===== URLs - CONVERTIR A TEXTO PRONUNCIABLE =====
     def url_a_texto(match):
         url = match.group(0)
-        
-        # Quitar protocolo si existe
         url = re.sub(r'^https?://', '', url)
-        
-        # Convertir caracteres especiales a palabras
         resultado = url
-        resultado = resultado.replace('://', ' dos puntos diagonal diagonal ')
-        resultado = resultado.replace(':', ' puerto ')  # Para puertos como :8088
+        resultado = resultado.replace(':', ' puerto ')
         resultado = resultado.replace('/', ' diagonal ')
         resultado = resultado.replace('.', ' punto ')
         resultado = resultado.replace('-', ' guión ')
         resultado = resultado.replace('_', ' guión bajo ')
-        resultado = resultado.replace('?', ' signo de interrogación ')
-        resultado = resultado.replace('=', ' igual ')
-        resultado = resultado.replace('&', ' y ')
         
-        # Convertir números a palabras para mejor pronunciación
         resultado = re.sub(r'8088', 'ocho cero ocho ocho', resultado)
         resultado = re.sub(r'(\d)', lambda m: {
             '0': 'cero', '1': 'uno', '2': 'dos', '3': 'tres', '4': 'cuatro',
             '5': 'cinco', '6': 'seis', '7': 'siete', '8': 'ocho', '9': 'nueve'
         }.get(m.group(1), m.group(1)), resultado)
         
-        # Limpiar espacios múltiples
         resultado = re.sub(r'\s+', ' ', resultado).strip()
-        
         return resultado
     
     # Detectar URLs (con o sin protocolo)
     texto = re.sub(
-        r'https?://[^\s,]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.:/\-_?=&]*',
+        r'[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*\.(com|net|org|pe|es|io|gov|edu|info)[^\s,]*',
         url_a_texto,
-        texto
+        texto,
+        flags=re.IGNORECASE
     )
     
     # ===== LIMPIEZA FINAL =====

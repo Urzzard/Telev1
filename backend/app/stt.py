@@ -114,16 +114,31 @@ class SpeechToText:
         caracteres_exoticos = sum(1 for c in texto if ord(c) > 0x024F)
         if caracteres_exoticos > len(texto) * 0.1:  # Más del 10%
             return False
+
+        # ===== NUEVO: Detectar repeticiones excesivas =====
+        palabras = texto_lower.split()
+        if len(palabras) >= 5:
+            # Contar palabra más frecuente
+            from collections import Counter
+            contador = Counter(palabras)
+            palabra_mas_comun, frecuencia = contador.most_common(1)[0]
+        
+            # Si una palabra se repite más del 50% de las veces, es alucinación
+            if frecuencia > len(palabras) * 0.5:
+                logger.warning(f"⚠️ Alucinación detectada: '{palabra_mas_comun}' x{frecuencia}")
+                return False
         
         # Detectar repeticiones excesivas (blufufufuf...)
         if len(texto) > 20:
-            for i in range(2, 6):
+            for i in range(2, 8):
                 patron = texto[:i]
-                if texto.count(patron) > 5:
+                repeticiones = texto.count(patron)
+                if repeticiones > 5 and len(patron) * repeticiones > len(texto) * 0.5:
+                    logger.warning(f"⚠️ Patrón repetitivo detectado: '{patron}' x{repeticiones}")
                     return False
         
         # Texto muy largo sin espacios = basura
-        palabras = texto.split()
+        #palabras = texto.split()
         if palabras:
             palabra_mas_larga = max(len(p) for p in palabras)
             if palabra_mas_larga > 25:
