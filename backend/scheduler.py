@@ -8,7 +8,8 @@ import os
 import time
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from app.postgres_db import get_postgres_db
 from app.sqlserver_db import get_sqlserver_db
@@ -163,6 +164,23 @@ def mostrar_resumen():
     finally:
         pg.disconnect()
 
+def limpiar_audios_antiguos(directorio: str = "/output", horas: int = 24):
+    """Elimina archivos de audio mayores a X horas"""
+    try:
+        ahora = datetime.now()
+        limite = ahora - timedelta(hours=horas)
+        eliminados = 0
+        
+        for archivo in Path(directorio).glob("*.wav"):
+            if archivo.stat().st_mtime < limite.timestamp():
+                archivo.unlink()
+                eliminados += 1
+        
+        if eliminados > 0:
+            logger.info(f"🧹 Limpieza: {eliminados} audios antiguos eliminados")
+    except Exception as e:
+        logger.warning(f"⚠️ Error en limpieza: {e}")
+
 
 def main():
     """Loop principal del scheduler"""
@@ -178,10 +196,17 @@ def main():
     
     ultima_sync = 0
     ultimo_resumen = 0
+
+    ultima_limpieza = datetime.now()
     
     while True:
         try:
             ahora = time.time()
+            
+            # Limpieza cada hora
+            if (datetime.now() - ultima_limpieza).total_seconds() > 3600:
+                limpiar_audios_antiguos("/output", horas=24)
+                ultima_limpieza = datetime.now()
             
             if ahora - ultima_sync >= SYNC_INTERVAL:
                 sincronizar_empleados()
@@ -194,6 +219,8 @@ def main():
                 ultimo_resumen = ahora
             
             time.sleep(CALL_INTERVAL)
+
+            
             
         except KeyboardInterrupt:
             logger.info("👋 Scheduler detenido")

@@ -160,6 +160,7 @@ class LLMClient:
         despedidas = [
             r'¡?Te deseo un buen día!?',
             r'¡?Que tengas buen día!?',
+            r'¡?Que tengas un.*$',
             r'¡?Buen día!?',
             r'¡?Hasta pronto!?',
             r'¡?Éxito!?',

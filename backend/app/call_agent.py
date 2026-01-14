@@ -407,15 +407,20 @@ class CallAgent:
         t_tts_fin = time.time()
         logger.info(f"⏱️ [TIEMPO] TTS+Reproducción: {(t_tts_fin - t_tts_inicio)*1000:.0f}ms")
         
-        # 6. Preguntar si hay más dudas (SOLO si no hubo barge-in)
-        if not self.barge_in_detected:
-            if not await self._hablar_frases([get_pregunta_mas_dudas()]):
-                self.state = CallState.FINALIZADO
-                return
-        else:
-            logger.info("⏩ [FLUJO] Saltando pregunta de dudas (hubo barge-in)")
-            # Muletilla rápida para que el usuario sepa que lo escuchamos
-            #await self._reproducir_muletilla()
+
+        # 6. Ya no preguntamos automáticamente - el LLM decide si incluir pregunta
+        if self.barge_in_detected:
+            logger.info("⏩ [FLUJO] Barge-in detectado, continuando...")
+
+        # # 6. Preguntar si hay más dudas (SOLO si no hubo barge-in)
+        # if not self.barge_in_detected:
+        #     if not await self._hablar_frases([get_pregunta_mas_dudas()]):
+        #         self.state = CallState.FINALIZADO
+        #         return
+        # else:
+        #     logger.info("⏩ [FLUJO] Saltando pregunta de dudas (hubo barge-in)")
+        #     # Muletilla rápida para que el usuario sepa que lo escuchamos
+        #     #await self._reproducir_muletilla()
         
         TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
         logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
@@ -732,6 +737,7 @@ class CallAgent:
 
         #CUSTIONABLE
         texto_limpio = texto_lower.rstrip('.,!?')
+        texto_limpio = texto_limpio.replace(',', ' ').replace('  ', ' ').strip()
 
         palabras = texto_limpio.split()
         
@@ -744,6 +750,8 @@ class CallAgent:
             # Confirmaciones elaboradas
             "perfecto", "genial", "entiendo", "entendido",
             "de acuerdo", "listo", "correcto", "exacto", "excelente",
+            "ok perfecto", "ok listo", "perfecto gracias", "ok gracias",
+            "ah ok", "ah perfecto", "ya perfecto", "listo perfecto",
             # Verificaciones de audio
             "escucha", "escuchá", "me escuchas", "se escucha", 
             "te escucho", "sí te escucho", "ahora sí",

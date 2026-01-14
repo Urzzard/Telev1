@@ -134,6 +134,8 @@ services:
     build: ./backend
     container_name: telefonista_scheduler
     command: ["sh", "-c", "echo 'Esperando 2 min para iniciar...' && sleep 120 && python scheduler.py"]
+    volumes:
+      - ./xtts-service/output:/output # Para limpiar audios antiguos
     environment:
       - TZ=America/Lima
       - POSTGRES_HOST=postgres
