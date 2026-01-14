@@ -104,6 +104,10 @@ class CallAgent:
         self.barge_in_detected = False
         self.barge_in_audio = bytearray()
 
+        # NUEVO: Pre-generación de saludo en paralelo
+        self.audio_saludo_pregenerado = None
+        self.tarea_pregenerar_saludo = None
+
     async def _reproducir_muletilla(self):
         """Reproduce una muletilla breve para indicar que estamos escuchando."""
         import random
@@ -151,6 +155,30 @@ class CallAgent:
         except Exception as e:
             logger.error(f"❌ Error cargando empleado: {e}")
             self._set_datos_default()
+
+    async def _pregenerar_saludo(self):
+        """Genera el audio del saludo en paralelo mientras detectamos buzón"""
+        try:
+            from app.prompts import get_saludo, get_presentacion, get_verificacion
+            
+            frases = [
+                get_saludo(),
+                get_presentacion(), 
+                get_verificacion(self.nombre)
+            ]
+            texto_saludo = " ".join(frases)
+            
+            # Generar audio (esto toma ~1s)
+            audio_data = await self.tts.synthesize(texto_saludo)
+            
+            if audio_data:
+                logger.info(f"✅ [PRE-GEN] Saludo pre-generado ({len(audio_data)} bytes)")
+                self.audio_saludo_pregenerado = audio_data
+            else:
+                logger.warning("⚠️ [PRE-GEN] No se pudo pre-generar saludo")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [PRE-GEN] Error: {e}")
 
     def _set_datos_default(self):
         """Valores por defecto si no se encuentra empleado"""
@@ -249,11 +277,18 @@ class CallAgent:
     # ==================== ESTADOS ====================
 
     async def _estado_detectar_buzon(self):
-        """Detecta si es buzón o humano"""
+        """Detecta si es buzón o humano - CON PRE-GENERACIÓN EN PARALELO"""
+        
+        # NUEVO: Iniciar pre-generación del saludo en paralelo
+        self.tarea_pregenerar_saludo = asyncio.create_task(self._pregenerar_saludo())
+        
         es_buzon = await self._detectar_buzon_voz()
         
         if es_buzon:
             logger.warning("🚫 Buzón detectado. Abortando.")
+            # Cancelar pre-generación si estaba corriendo
+            if self.tarea_pregenerar_saludo:
+                self.tarea_pregenerar_saludo.cancel()
             self._actualizar_resultado_postgres("FALLIDO")
             self._colgar()
             self.state = CallState.FINALIZADO
@@ -262,16 +297,56 @@ class CallAgent:
             self.state = CallState.PRESENTACION
 
     async def _estado_presentacion(self):
-        """Saludo y verificación de identidad"""
-        frases = [
-            get_saludo(),
-            get_presentacion(),
-            get_verificacion(self.nombre)
-        ]
+        """Saludo y verificación de identidad - USA AUDIO PRE-GENERADO SI EXISTE"""
+        import numpy as np
+        from scipy import signal
         
-        if not await self._hablar_frases(frases):
-            self.state = CallState.FINALIZADO
-            return
+        # Esperar a que termine la pre-generación (si aún está corriendo)
+        if self.tarea_pregenerar_saludo:
+            try:
+                await asyncio.wait_for(self.tarea_pregenerar_saludo, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ [PRE-GEN] Timeout esperando audio")
+            except Exception as e:
+                logger.warning(f"⚠️ [PRE-GEN] Error: {e}")
+        
+        # Usar audio pre-generado si existe
+        if self.audio_saludo_pregenerado:
+            logger.info("🚀 [PRE-GEN] Usando saludo pre-generado (latencia reducida)")
+            
+            # Convertir WAV a PCM 8kHz y enviar
+            audio_24k = np.frombuffer(self.audio_saludo_pregenerado[44:], dtype=np.int16)  # Skip WAV header
+            audio_8k = signal.resample_poly(audio_24k, 1, 3)
+            audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+            
+            # Enviar audio
+            total_bytes = len(audio_8k.tobytes())
+            chunk_size = 1600  # 100ms chunks
+            pcm_data = audio_8k.tobytes()
+            
+            for i in range(0, len(pcm_data), chunk_size):
+                if self.ws.client_state.name != "CONNECTED":
+                    self.state = CallState.FINALIZADO
+                    return
+                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
+                await asyncio.sleep(0.05)
+            
+            # Esperar reproducción
+            duracion = total_bytes / 16000
+            await asyncio.sleep(duracion)
+            
+        else:
+            # Fallback: generar normalmente
+            logger.info("⚠️ [PRE-GEN] Sin audio pre-generado, generando ahora...")
+            frases = [
+                get_saludo(),
+                get_presentacion(),
+                get_verificacion(self.nombre)
+            ]
+            
+            if not await self._hablar_frases(frases):
+                self.state = CallState.FINALIZADO
+                return
         
         self.state = CallState.ESPERAR_CONFIRMACION
 
