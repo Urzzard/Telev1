@@ -412,9 +412,19 @@ class CallAgent:
             self.state = CallState.DESPEDIDA_OK
             return
         
-        # PRIMERO verificar si quiere terminar
-        if self._es_negacion_simple(respuesta) or self._es_despedida(respuesta):
-            logger.info("👋 Usuario sin más dudas")
+        # NUEVO: Verificar si es backchannel/confirmación PRIMERO
+        if self._es_confirmacion_o_backchannel(respuesta):
+            logger.info("✅ Usuario confirmó, preguntando si hay más dudas")
+            await self._hablar_frases([get_pregunta_mas_dudas()])
+            respuesta = await self._escuchar_respuesta()
+            
+            if not respuesta:
+                self.state = CallState.DESPEDIDA_OK
+                return
+        
+        # LUEGO verificar si quiere terminar (despedida explícita)
+        if self._es_despedida_explicita(respuesta):
+            logger.info("👋 Usuario se despide explícitamente")
             self.state = CallState.DESPEDIDA_OK
             return
         
@@ -880,36 +890,94 @@ class CallAgent:
                 return True
         
         return False
+
+    
+    def _es_confirmacion_o_backchannel(self, texto: str) -> bool:
+        """
+        Detecta si el usuario está confirmando/aceptando información.
+        Esto NO es una despedida, requiere preguntar si hay más dudas.
+        """
+        if not texto:
+            return False
+        
+        texto_lower = texto.lower().strip()
+        
+        # Confirmaciones que NO son despedidas
+        confirmaciones = [
+            "ok", "okey", "okay", "vale", "bien", "bueno",
+            "ah ok", "ah bueno", "ah ya", "ya veo",
+            "está bien", "esta bien", "muy bien", 
+            "entiendo", "entendido", "perfecto", "genial",
+            "claro", "claro que sí", "de acuerdo", "listo",
+            "ah bueno está bien", "ah bueno esta bien",
+            "ok perfecto", "bien gracias", "ok gracias",
+            "ya entendí", "ya entendi", "ahora sí", "ahora si",
+        ]
+        
+        # Verificar coincidencia exacta o casi exacta
+        texto_limpio = texto_lower.rstrip('.,!?')
+        
+        for conf in confirmaciones:
+            if texto_limpio == conf or texto_limpio.startswith(conf + " ") or texto_limpio.endswith(" " + conf):
+                return True
+        
+        # Si tiene menos de 5 palabras y NO contiene palabras interrogativas
+        palabras = texto_limpio.split()
+        if len(palabras) <= 5:
+            interrogativas = ["qué", "que", "cuál", "cual", "cómo", "como", 
+                            "dónde", "donde", "cuándo", "cuando", "por qué",
+                            "quién", "quien", "cuánto", "cuanto"]
+            tiene_pregunta = any(q in texto_lower for q in interrogativas)
+            
+            # Indicadores de querer más info
+            quiere_info = ["quisiera", "gustaría", "gustaria", "quiero", 
+                          "puedes", "podrías", "podrias", "dime", "necesito",
+                          "también", "tambien", "otra", "otro", "más", "mas"]
+            quiere_mas = any(q in texto_lower for q in quiere_info)
+            
+            if not tiene_pregunta and not quiere_mas:
+                # Palabras típicas de confirmación
+                palabras_confirm = ["ok", "sí", "si", "bueno", "bien", "claro", 
+                                   "perfecto", "genial", "entiendo", "ah", "ya"]
+                if any(p in palabras for p in palabras_confirm):
+                    return True
+        
+        return False
     
 
-    # async def _evaluar_barge_in(self) -> bool:
-    #     """
-    #     Evalúa si el audio capturado es una pregunta real o solo backchannel.
-    #     Retorna True si debemos interrumpir, False si ignorar.
-    #     """
-    #     if len(self.barge_in_audio) < 8000:  # Menos de 0.5s
-    #         logger.info(f"⚠️ Audio muy corto ({len(self.barge_in_audio)} bytes), ignorando")
-    #         return False
+    def _es_despedida_explicita(self, texto: str) -> bool:
+        """
+        Detecta SOLO despedidas claras y explícitas.
+        Más estricto que _es_despedida() para evitar falsos positivos.
+        """
+        texto_lower = texto.lower().strip()
         
-    #     # Transcribir el audio capturado
-    #     try:
-    #         texto = await self.stt.transcribe(bytes(self.barge_in_audio))
-            
-    #         if not texto or len(texto.strip()) < 2:
-    #             return False
-            
-    #         logger.info(f"🎤 Barge-in transcrito: '{texto}'")
-            
-    #         # Evaluar si es backchannel o pregunta real
-    #         if self._es_backchannel(texto):
-    #             return False
-            
-    #         # Es una pregunta o comentario sustancial
-    #         return True
-            
-    #     except Exception as e:
-    #         logger.warning(f"⚠️ Error transcribiendo barge-in: {e}")
-    #         return False
+        # Despedidas explícitas (el usuario claramente quiere terminar)
+        despedidas_claras = [
+            "no, nada más", "no nada más", "no, nada mas", "no nada mas",
+            "no tengo más dudas", "no tengo mas dudas",
+            "no tengo más preguntas", "no tengo mas preguntas",
+            "no, gracias", "no gracias", 
+            "eso es todo", "eso era todo", "era todo",
+            "ninguna duda", "ninguna pregunta", "ninguna más", "ninguna mas",
+            "chau", "chao", "adiós", "adios", "bye", "hasta luego",
+            "nos vemos", "me despido", "hasta pronto",
+            "no, ya está", "no ya está", "no, ya esta", "no ya esta",
+            "listo, gracias", "listo gracias",
+            "perfecto, eso es todo", "perfecto eso es todo",
+        ]
+        
+        for despedida in despedidas_claras:
+            if despedida in texto_lower:
+                return True
+        
+        # "gracias" + indicador de cierre
+        if "gracias" in texto_lower:
+            cierres = ["no", "nada", "eso es todo", "era todo", "listo", "ya no"]
+            if any(c in texto_lower for c in cierres):
+                return True
+        
+        return False
 
 
     async def _monitorear_barge_in(self):
@@ -1214,14 +1282,24 @@ class CallAgent:
         
         # Si menciona querer saber/preguntar = NO es negación
         indicadores_pregunta = [
+            # Verbos de preguntar
+            "pregunt",  # pregunta, preguntaba, preguntando, preguntarte
             "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
             "puedes decirme", "podrías decirme", "podrias decirme",
+            # Interrogativos
             "cuál es", "cual es", "cómo es", "como es",
             "dónde", "donde", "cuándo", "cuando",
+            "qué es", "que es", "qué hay", "que hay",
+            # Verbos de conocimiento
+            "tienes el", "tienes la", "tienes los",
+            "sabes", "conoces", "me dices", "me puedes",
+            # Temas
             "sobre el", "sobre la", "sobre los", "sobre las",
             "acerca de", "información", "informacion",
             "horario", "dirección", "direccion", "portal",
-            "una pregunta", "otra pregunta", "una duda", "otra duda"
+            "una pregunta", "otra pregunta", "una duda", "otra duda",
+            # Peticiones
+            "necesito", "quiero", "me interesa",
         ]
         
         if any(ind in texto_lower for ind in indicadores_pregunta):
@@ -1246,16 +1324,24 @@ class CallAgent:
         
         # Si menciona querer saber/preguntar = NO es despedida
         indicadores_pregunta = [
+            # Verbos de preguntar
+            "pregunt",  # pregunta, preguntaba, preguntando, preguntarte
             "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
             "puedes decirme", "podrías decirme", "podrias decirme",
-            "cuál es", "cual es", "cómo es", "como es", "qué es", "que es",
+            # Interrogativos
+            "cuál es", "cual es", "cómo es", "como es",
             "dónde", "donde", "cuándo", "cuando",
+            "qué es", "que es", "qué hay", "que hay",
+            # Verbos de conocimiento
+            "tienes el", "tienes la", "tienes los",
+            "sabes", "conoces", "me dices", "me puedes",
+            # Temas
             "sobre el", "sobre la", "sobre los", "sobre las",
             "acerca de", "información", "informacion",
-            "horario", "dirección", "direccion", "portal", "oficina",
+            "horario", "dirección", "direccion", "portal",
             "una pregunta", "otra pregunta", "una duda", "otra duda",
-            "también", "tambien", "además", "ademas",
-            "por favor", "saber"
+            # Peticiones
+            "necesito", "quiero", "me interesa",
         ]
         
         if any(ind in texto_lower for ind in indicadores_pregunta):
