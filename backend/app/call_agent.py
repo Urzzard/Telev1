@@ -12,7 +12,8 @@ from app.prompts import get_system_prompt_llm
 from app.intent_detector import IntentDetector
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
-    get_bienvenida, get_despedida_ok, get_despedida_error, 
+    get_bienvenida, get_despedida_ok, get_despedida_error,
+    get_despedida_sin_respuesta,
     get_system_prompt_llm, get_pregunta_mas_dudas
 )
 from app.postgres_db import get_postgres_db
@@ -97,6 +98,7 @@ class CallAgent:
         self.intentos_confirmacion = 0
         self.MAX_INTENTOS = 3
         self.resultado_final = None
+        self.resultado_registrado = False
 
         self.intent_detector = IntentDetector()
         self.vad = VoiceActivityDetector(sample_rate=8000)
@@ -409,7 +411,7 @@ class CallAgent:
             respuesta = await self._escuchar_respuesta()
         
         if not respuesta:
-            self.state = CallState.DESPEDIDA_OK
+            await self._despedir_sin_respuesta()
             return
         
         # NUEVO: Verificar si es backchannel/confirmación PRIMERO
@@ -419,8 +421,14 @@ class CallAgent:
             respuesta = await self._escuchar_respuesta()
             
             if not respuesta:
-                self.state = CallState.DESPEDIDA_OK
+                await self._despedir_sin_respuesta()
                 return
+
+        # NUEVO: Verificar si es respuesta incoherente (mala transcripción)
+        if self.intent_detector.es_respuesta_incoherente(respuesta):
+            logger.warning(f"⚠️ Respuesta incoherente detectada: '{respuesta}'")
+            await self._hablar_frases(["Disculpa, no te escuché bien. ¿Me lo puedes repetir?"])
+            return  # Vuelve a esperar_dudas
         
         # LUEGO verificar si quiere terminar (despedida explícita)
         if self._es_despedida_explicita(respuesta):
@@ -518,6 +526,15 @@ class CallAgent:
         await self._hablar_sin_barge_in(get_despedida_ok())
         await asyncio.sleep(0.5)
         self._actualizar_resultado_postgres("EXITO")
+        self._colgar()
+        self.state = CallState.FINALIZADO
+
+    async def _despedir_sin_respuesta(self):
+        """Despedida cuando no hubo respuesta válida del usuario (audio bajo, colgó, etc.)"""
+        logger.warning("👋 Sin respuesta válida, marcando como FALLIDO para reintento")
+        await self._hablar_sin_barge_in(get_despedida_sin_respuesta())
+        await asyncio.sleep(0.5)
+        self._actualizar_resultado_postgres("FALLIDO")
         self._colgar()
         self.state = CallState.FINALIZADO
 
@@ -1362,6 +1379,10 @@ class CallAgent:
 
     def _actualizar_resultado_postgres(self, resultado: str):
         """Actualiza el resultado de la llamada en PostgreSQL"""
+        if self.resultado_registrado:
+            logger.debug(f"⏭️ Resultado ya registrado, ignorando: {resultado}")
+            return
+        
         try:
             pg = get_postgres_db()
             if pg.connect():
@@ -1374,8 +1395,9 @@ class CallAgent:
                 
                 pg.disconnect()
                 logger.info(f"📊 PostgreSQL actualizado: {resultado}")
+                self.resultado_registrado = True
         except Exception as e:
-            logger.error(f"❌ Error actualizando PostgreSQL: {e}")  
+            logger.error(f"❌ Error actualizando PostgreSQL: {e}")
 
     def _colgar(self):
         """Ordena colgar al sip-service"""

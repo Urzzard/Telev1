@@ -82,3 +82,45 @@ class IntentDetector:
     def limpiar(self):
         """Limpia estado para nueva llamada"""
         self.preguntas_realizadas = []
+
+
+    def es_respuesta_incoherente(self, texto: str) -> bool:
+        """
+        Detecta si la respuesta es completamente fuera de contexto.
+        Retorna True si parece ser ruido/mala transcripción.
+        """
+        if not texto or len(texto) < 3:
+            return True
+        
+        texto_lower = texto.lower()
+        
+        # Temas completamente fuera de contexto para una llamada de onboarding
+        temas_incoherentes = [
+            # Entretenimiento
+            "jugar", "juego", "videojuego", "película", "pelicula", "serie", "netflix",
+            "fútbol", "futbol", "partido", "gol", "deporte",
+            # Comida casual
+            "pizza", "hamburguesa", "cerveza", "trago", "fiesta",
+            # Otros
+            "novio", "novia", "amor", "beso", "bailar",
+            "clima", "lluvia", "sol",
+            # Frases sin sentido común en transcripciones malas
+            "subtítulos", "suscríbete", "like", "comentar",
+        ]
+        
+        # Si contiene tema incoherente Y NO contiene palabras de trabajo
+        palabras_trabajo = [
+            "horario", "oficina", "trabajo", "puesto", "fecha", "inicio",
+            "jefe", "área", "dirección", "portal", "documento", "dni",
+            "sí", "no", "gracias", "perfecto", "entiendo", "claro",
+            "duda", "pregunta", "información", "ayuda",
+        ]
+        
+        tiene_incoherente = any(t in texto_lower for t in temas_incoherentes)
+        tiene_trabajo = any(p in texto_lower for p in palabras_trabajo)
+        
+        # Es incoherente si tiene tema raro Y no tiene nada de trabajo
+        if tiene_incoherente and not tiene_trabajo:
+            return True
+        
+        return False

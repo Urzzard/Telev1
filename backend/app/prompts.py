@@ -151,6 +151,14 @@ def get_despedida_error():
     ]
     return random.choice(opciones)
 
+def get_despedida_sin_respuesta():
+    """Despedida cuando no hubo respuesta válida (audio bajo, corte, etc.)"""
+    opciones = [
+        "Parece que perdimos la conexión. Te volveremos a llamar.",
+        "No te escucho bien. Te llamaremos de nuevo. ¡Hasta luego!",
+        "Se cortó la comunicación. Te contactaremos nuevamente.",
+    ]
+    return random.choice(opciones)
 
 # ==================== PROMPT DEL LLM ====================
 
@@ -185,6 +193,7 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
                 6. Si el usuario pide CLARIFICACIÓN sobre tu respuesta, responde la duda directamente.  
                 7. Sé natural, amable y varía tus respuestas.  
                 8. Si no entiendes, pide que repitan claramente.
+                9. OBLIGATORIO: SIEMPRE termina CADA respuesta preguntando si tiene más dudas. Usa frases como "¿Alguna otra duda?", "¿Te ayudo con algo más?" o "¿Tienes otra pregunta?". Varía la frase pero NUNCA omitas esta pregunta.
 
                 Restricciones de contenido:
                 - Si no tienes la información EXACTA, NO la inventes.  
@@ -206,5 +215,8 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
                 R: Te llamamos para darte la bienvenida a Seils Land, confirmarte tu fecha de inicio y ayudarte si tienes dudas sobre tu primer día.
 
                 P: ¿En qué área voy a trabajar?  
-                R: Tu Jefe de Área te dará esos detalles cuando llegues.
+                R: Tu Jefe de Área te dará esos detalles cuando llegues. ¿Alguna otra pregunta?
+
+                P: ¿Cuál es el horario?
+                R: El horario es de 9 de la mañana a 6 de la tarde, con descanso de 1 a 2. ¿Te puedo ayudar con algo más?
                 """
