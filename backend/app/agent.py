@@ -156,10 +156,10 @@ class CallAgent:
 
     def _get_system_prompt(self):
         return f"""Eres asistente de RRHH de Seils Land.
-Responde dudas sobre la incorporación de {self.nombre_empleado}.
-Horario: L-V 9am-6pm.
-Ubicación: Jirón Horacio Cachay Díaz 393, La Victoria.
-Sé muy breve y amable."""
+                    Responde dudas sobre la incorporación de {self.nombre_empleado}.
+                    Horario: L-V 9am-6pm.
+                    Ubicación: Jirón, Horacio Cachay Díaz 393, La Victoria.
+                    Sé muy breve y amable."""
 
     async def _speak(self, text):
         """Genera y envía audio"""

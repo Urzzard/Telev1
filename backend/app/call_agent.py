@@ -20,6 +20,7 @@ from app.postgres_db import get_postgres_db
 from app.vad import VoiceActivityDetector
 import numpy as np
 import time
+from scipy import signal
 
 logger = logging.getLogger("CallAgent")
 
@@ -99,6 +100,7 @@ class CallAgent:
         self.MAX_INTENTOS = 3
         self.resultado_final = None
         self.resultado_registrado = False
+        self.turno_conversacion = 0
 
         self.intent_detector = IntentDetector()
         self.vad = VoiceActivityDetector(sample_rate=8000)
@@ -109,6 +111,10 @@ class CallAgent:
         # NUEVO: Pre-generación de saludo en paralelo
         self.audio_saludo_pregenerado = None
         self.tarea_pregenerar_saludo = None
+
+        # Pre-generación de bienvenida en paralelo
+        self.audio_bienvenida_pregenerado = None
+        self.tarea_pregenerar_bienvenida = None
 
     async def _reproducir_muletilla(self):
         """Reproduce una muletilla breve para indicar que estamos escuchando."""
@@ -181,6 +187,25 @@ class CallAgent:
                 
         except Exception as e:
             logger.warning(f"⚠️ [PRE-GEN] Error: {e}")
+
+
+    async def _pregenerar_bienvenida(self):
+        """Genera el audio de bienvenida en paralelo mientras esperamos confirmación"""
+        try:
+            frases = get_bienvenida(self.nombre, self.puesto, self.fecha_inicio)
+            texto_bienvenida = " ".join(frases)
+            
+            audio_data = await self.tts.synthesize(texto_bienvenida)
+            
+            if audio_data:
+                logger.info(f"✅ [PRE-GEN] Bienvenida pre-generada ({len(audio_data)} bytes)")
+                self.audio_bienvenida_pregenerado = audio_data
+            else:
+                logger.warning("⚠️ [PRE-GEN] No se pudo pre-generar bienvenida")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [PRE-GEN] Error bienvenida: {e}")
+
 
     def _set_datos_default(self):
         """Valores por defecto si no se encuentra empleado"""
@@ -354,6 +379,10 @@ class CallAgent:
 
     async def _estado_esperar_confirmacion(self):
         """Escucha si confirma identidad"""
+
+        # Iniciar pre-generación de bienvenida en paralelo (si no existe ya)
+        if self.tarea_pregenerar_bienvenida is None and self.audio_bienvenida_pregenerado is None:
+            self.tarea_pregenerar_bienvenida = asyncio.create_task(self._pregenerar_bienvenida())
         respuesta = await self._escuchar_respuesta()
         
         if not respuesta:
@@ -364,6 +393,12 @@ class CallAgent:
                 return
             await self._hablar_frases(["¿Hola? ¿Me escuchas?"])
             return
+    
+        # NUEVO: Verificar si es respuesta incoherente (mala transcripción)
+        if self.intent_detector.es_respuesta_incoherente(respuesta):
+            logger.warning(f"⚠️ Respuesta incoherente en confirmación: '{respuesta}'")
+            await self._hablar_frases(["Disculpa, no te escuché bien. ¿Me puedes repetir tu nombre?"])
+            return  # Vuelve a esperar_confirmacion
         
         if self._es_confirmacion(respuesta):
             logger.info("✅ Identidad confirmada")
@@ -380,15 +415,51 @@ class CallAgent:
             await self._hablar_frases([f"Disculpa, ¿eres {self.nombre}?"])
 
     async def _estado_bienvenida(self):
-        """Da la bienvenida con streaming de audio"""
-        frases = get_bienvenida(self.nombre, self.puesto, self.fecha_inicio)
+        """Da la bienvenida - USA AUDIO PRE-GENERADO SI EXISTE"""
+        import numpy as np
+        from scipy import signal
         
-        # Unir frases y usar streaming
-        texto_completo = " ".join(frases)
+        # Esperar a que termine la pre-generación (si aún está corriendo)
+        if self.tarea_pregenerar_bienvenida:
+            try:
+                await asyncio.wait_for(self.tarea_pregenerar_bienvenida, timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ [PRE-GEN] Timeout esperando bienvenida")
+            except Exception as e:
+                logger.warning(f"⚠️ [PRE-GEN] Error: {e}")
         
-        if not await self._hablar_con_streaming_real(texto_completo):
-            self.state = CallState.FINALIZADO
-            return
+        # Usar audio pre-generado si existe
+        if self.audio_bienvenida_pregenerado:
+            logger.info("🚀 [PRE-GEN] Usando bienvenida pre-generada (latencia reducida)")
+            
+            # Convertir WAV a PCM 8kHz y enviar
+            audio_24k = np.frombuffer(self.audio_bienvenida_pregenerado[44:], dtype=np.int16)
+            audio_8k = signal.resample_poly(audio_24k, 1, 3)
+            audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+            
+            # Enviar audio
+            total_bytes = len(audio_8k.tobytes())
+            chunk_size = 1600
+            pcm_data = audio_8k.tobytes()
+            
+            for i in range(0, len(pcm_data), chunk_size):
+                if self.ws.client_state.name != "CONNECTED":
+                    self.state = CallState.FINALIZADO
+                    return
+                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
+                await asyncio.sleep(0.05)
+            
+            duracion = total_bytes / 16000
+            await asyncio.sleep(duracion)
+        else:
+            # Fallback: generar normalmente
+            logger.info("⚠️ [PRE-GEN] Sin bienvenida pre-generada, generando ahora...")
+            frases = get_bienvenida(self.nombre, self.puesto, self.fecha_inicio)
+            texto_completo = " ".join(frases)
+            
+            if not await self._hablar_con_streaming_real(texto_completo):
+                self.state = CallState.FINALIZADO
+                return
         
         self.state = CallState.ESPERAR_DUDAS
 
@@ -439,6 +510,9 @@ class CallAgent:
         # Si no es despedida, es una duda
         logger.info(f"❓ Usuario tiene duda: {respuesta}")
         self.duda_actual = respuesta
+
+        # Registrar para fine-tuning
+        self._registrar_turno("usuario", respuesta, confianza=self.vad.max_confidence)
         self.state = CallState.RESPONDER
 
     async def _estado_responder(self):
@@ -485,6 +559,10 @@ class CallAgent:
                 "content": respuesta
             })
             
+            # Registrar para fine-tuning
+            self._registrar_turno("asistente", respuesta, categoria=categoria)
+
+
         except Exception as e:
             logger.error(f"❌ Error LLM: {e}")
             respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
@@ -1377,6 +1455,30 @@ class CallAgent:
         
         return False
 
+    
+    def _registrar_turno(self, rol: str, texto: str, categoria: str = None, confianza: float = None):
+        """Registra turno de conversación para fine-tuning"""
+        if not texto or len(texto) < 2:
+            return
+        
+        self.turno_conversacion += 1
+        
+        try:
+            pg = get_postgres_db()
+            if pg.connect():
+                pg.registrar_turno_conversacion(
+                    empleado_id=self.employee_id,
+                    turno=self.turno_conversacion,
+                    rol=rol,
+                    texto=texto,
+                    categoria=categoria,
+                    confianza_vad=confianza
+                )
+                pg.disconnect()
+        except Exception as e:
+            logger.warning(f"⚠️ Error registrando turno: {e}")
+
+
     def _actualizar_resultado_postgres(self, resultado: str):
         """Actualiza el resultado de la llamada en PostgreSQL"""
         if self.resultado_registrado:
@@ -1391,7 +1493,7 @@ class CallAgent:
                     pg.actualizar_llamada(self.employee_id, "completada")
                 else:
                     pg.marcar_intento_fallido(self.employee_id, minutos_espera=5)
-                    pg.actualizar_llamada(self.employee_id, "fallida")
+                    pg.actualizar_llamada(self.em_actualizar_resultado_postgresployee_id, "fallida")
                 
                 pg.disconnect()
                 logger.info(f"📊 PostgreSQL actualizado: {resultado}")

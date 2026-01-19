@@ -51,3 +51,20 @@ CREATE INDEX idx_empleados_pendientes ON empleados(estado, intentos);
 
 -- Mensaje de confirmación
 DO $$ BEGIN RAISE NOTICE '✅ Base de datos inicializada'; END $$;
+
+
+-- Tabla de conversaciones para fine-tuning
+CREATE TABLE conversaciones (
+    id SERIAL PRIMARY KEY,
+    empleado_id INTEGER REFERENCES empleados(id),
+    llamada_id INTEGER REFERENCES llamadas(id),
+    turno INTEGER NOT NULL,
+    rol VARCHAR(20) NOT NULL,  -- 'usuario' o 'asistente'
+    texto TEXT NOT NULL,
+    categoria VARCHAR(50),      -- horario, ubicacion, etc.
+    confianza_vad FLOAT,        -- Para análisis de calidad de audio
+    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_conversaciones_empleado ON conversaciones(empleado_id);
+CREATE INDEX idx_conversaciones_llamada ON conversaciones(llamada_id);

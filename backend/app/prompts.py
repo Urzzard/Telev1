@@ -12,7 +12,7 @@ EMPRESA_INFO = {
         "descanso": "1:00 p.m. a 2:00 p.m."
     },
     "ubicacion": {
-        "direccion": "Jirón Horacio Cachay Díaz 393",
+        "direccion": "Jirón, Horacio Cachay Díaz 393",
         "distrito": "La Victoria",
         "ciudad": "Lima",
         "referencia": "Cerca del cruce con Av. México"
@@ -80,6 +80,8 @@ def get_saludo():
         f"Hola, {saludo_hora.lower()}.",
         f"{saludo_hora}.",
         f"Hola, muy {saludo_hora.lower()}.",
+        f"{saludo_hora}, ¿cómo está?",
+        f"Hola, {saludo_hora.lower()}, ¿qué tal?",
     ]
     return random.choice(opciones)
 
@@ -87,9 +89,11 @@ def get_saludo():
 def get_presentacion():
     """Variaciones de la presentación"""
     opciones = [
-        "Me comunico de Seils Land.",
+        "Te llamo de Seils Land.",
         "Te llamo de parte de Seils Land.",
-        "Mi nombre es Jorge y te llamo de Seils Land.",
+        "Me comunico de Seils Land.",
+        "Llamo de parte de Recursos Humanos de Seils Land.",
+        "Soy del área de Recursos Humanos de Seils Land.",
     ]
     return random.choice(opciones)
 
@@ -100,26 +104,48 @@ def get_verificacion(nombre: str):
         f"¿Hablo con {nombre}?",
         f"¿Me comunico con {nombre}?",
         f"¿Eres {nombre}?",
+        f"¿Estoy hablando con {nombre}?",
+        f"Busco a {nombre}, ¿eres tú?",
     ]
     return random.choice(opciones)
 
 
 def get_bienvenida(nombre: str, puesto: str, fecha: str):
-    """Speech de bienvenida"""
-    intro = random.choice([
-        "Perfecto.",
-        "Excelente.",
-        "Muy bien.",
-    ])
+    """Speech de bienvenida - Múltiples estructuras"""
     
-    return [
-        intro,
-        f"Te damos la bienvenida a la familia Seils Land.",
-        f"Has sido contratado como {puesto}.",
-        f"Tu fecha de inicio es el {fecha}.",
-        "Pronto recibirás más información por correo.",
-        "¿Tienes alguna duda sobre tu incorporación?"
+    # Diferentes estructuras completas (no solo palabras)
+    estructuras = [
+        # Estructura 1: Corta y directa
+        [
+            random.choice(["Perfecto.", "Excelente.", "Muy bien."]),
+            f"Bienvenido a Seils Land.",
+            f"Empiezas el {fecha} como {puesto}.",
+            "¿Tienes alguna duda sobre tu ingreso?"
+        ],
+        # Estructura 2: Más cálida
+        [
+            random.choice(["Qué bueno hablar contigo.", "Qué gusto contactarte."]),
+            f"Te damos la bienvenida a Seils Land.",
+            f"Vas a empezar como {puesto} el {fecha}.",
+            "¿Hay algo que quieras preguntarme sobre tu primer día?"
+        ],
+        # Estructura 3: Formal
+        [
+            random.choice(["Perfecto.", "Muy bien."]),
+            f"Te confirmamos tu ingreso a Seils Land como {puesto}.",
+            f"Tu fecha de inicio es el {fecha}.",
+            "¿Tienes alguna pregunta sobre tu incorporación?"
+        ],
+        # Estructura 4: Amigable
+        [
+            random.choice(["Genial.", "Excelente."]),
+            f"Bienvenido al equipo de Seils Land.",
+            f"Comienzas el {fecha} en el puesto de {puesto}.",
+            "¿Alguna duda que pueda resolver respecto a tu primer día?"
+        ],
     ]
+    
+    return random.choice(estructuras)
 
 
 def get_pregunta_mas_dudas():
@@ -179,7 +205,7 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
 
                 Información general (puedes decirla si te la piden):
                 Horario: De 9 de la mañana a 6 de la tarde con descanso de 1 a 2 de la tarde.  
-                Dirección: Jirón Horacio Cachay Díaz 393, La Victoria - Lima.  
+                Dirección: Jirón, Horacio Cachay Díaz 393, La Victoria - Lima.  
                 Portal del empleado: peru.salesland.net:8088/salesland-autoservicios-web  
                 Primer día: Preséntate en recepción, RRHH o tu Jefe de Área te atenderán.  
                 Documentos: DNI y los indicados en tu correo de bienvenida.
@@ -206,7 +232,7 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
                 R: El horario es de 9 de la mañana a 6 de la tarde, con descanso de 1 a 2 de la tarde.
 
                 P: ¿Dónde queda la oficina?  
-                R: La oficina está en Jirón Horacio Cachay Díaz 393, La Victoria, Lima.
+                R: La oficina está en Jirón, Horacio Cachay Díaz 393, La Victoria, Lima.
 
                 P: ¿Qué portal de empleado usan?  
                 R: El portal es peru.salesland.net:8088/salesland-autoservicios-web.

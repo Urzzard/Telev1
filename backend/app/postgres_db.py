@@ -269,6 +269,42 @@ class PostgresDB:
         logger.info(f"📝 Llamada actualizada: emp={empleado_id}, resultado={resultado}")
 
 
+    # ==========================================
+    # CONVERSACIONES (PARA FINE-TUNING)
+    # ==========================================
+    
+    def registrar_turno_conversacion(
+        self, 
+        empleado_id: int, 
+        turno: int,
+        rol: str,  # 'usuario' o 'asistente'
+        texto: str,
+        categoria: str = None,
+        confianza_vad: float = None
+    ):
+        """Registra un turno de conversación para fine-tuning"""
+        try:
+            with self.get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO conversaciones (
+                        empleado_id, turno, rol, texto, categoria, confianza_vad
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                """, (empleado_id, turno, rol, texto, categoria, confianza_vad))
+        except Exception as e:
+            logger.warning(f"⚠️ Error guardando turno: {e}")
+    
+    def obtener_conversacion(self, empleado_id: int) -> list:
+        """Obtiene conversación completa de un empleado (para debug/review)"""
+        with self.get_cursor() as cur:
+            cur.execute("""
+                SELECT turno, rol, texto, categoria, timestamp
+                FROM conversaciones 
+                WHERE empleado_id = %s
+                ORDER BY timestamp ASC
+            """, (empleado_id,))
+            return [dict(row) for row in cur.fetchall()]
+
+
 # Instancia global
 _db_instance = None
 
