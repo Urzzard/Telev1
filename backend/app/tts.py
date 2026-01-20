@@ -137,7 +137,14 @@ class TextToSpeech:
         payload = {
             "text": text,
             "speaker_wav": self.xtts_speaker,
-            "language": self.xtts_language
+            "language": self.xtts_language,
+            # Parámetros para mejorar naturalidad
+            "temperature": 0.65,      # Menos variabilidad (más consistente)
+            "speed": 1.0,             # Velocidad normal
+            "length_penalty": 1.0,    # Penalización de longitud
+            "repetition_penalty": 5.0, # Evitar repeticiones
+            "top_k": 50,              # Diversidad controlada
+            "top_p": 0.85,            # Nucleus sampling
         }
         
         try:

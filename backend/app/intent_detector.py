@@ -124,3 +124,69 @@ class IntentDetector:
             return True
         
         return False
+
+    def es_pregunta_fuera_de_tema(self, texto: str) -> bool:
+        """
+        Detecta si la pregunta NO tiene nada que ver con onboarding.
+        Retorna True si es completamente fuera de tema.
+        """
+        if not texto or len(texto) < 5:
+            return False
+        
+        texto_lower = texto.lower()
+        
+        # Temas de onboarding (permitidos)
+        temas_onboarding = [
+            "horario", "hora", "entrada", "salida", "turno",
+            "dirección", "direccion", "oficina", "ubicación", "ubicacion", "llegar", "queda",
+            "portal", "web", "página", "sistema", "intranet",
+            "primer día", "primer dia", "primero", "presentarme", "documentos", "llevar",
+            "jefe", "área", "area", "supervisor", "reportar",
+            "puesto", "cargo", "trabajo", "posición",
+            "fecha", "inicio", "comienzo", "empiezo",
+            "contacto", "comunicar", "llamar",
+            "rrhh", "recursos humanos",
+            "dni", "documento",
+            # Confirmaciones/despedidas (permitidas)
+            "gracias", "ok", "perfecto", "entiendo", "claro", "bien",
+            "no", "nada más", "eso es todo", "chau", "adiós",
+        ]
+        
+        # Temas PROHIBIDOS (fuera de alcance total)
+        temas_prohibidos = [
+            # Noticias/actualidad
+            "actualidad", "noticia", "noticias", "política", "politica",
+            "elecciones", "presidente", "gobierno", "guerra",
+            # Entretenimiento
+            "película", "pelicula", "serie", "música", "musica", "canción",
+            "juego", "videojuego", "fútbol", "futbol", "deporte",
+            # Conocimiento general
+            "historia", "geografía", "ciencia", "matemática",
+            "receta", "cocina", "comida",
+            # Tecnología no relacionada
+            "programar", "código", "python", "inteligencia artificial",
+            "chatgpt", "openai", "google",
+            # Opiniones
+            "opinas", "crees", "piensas", "mejor", "peor",
+            # Otros
+            "chiste", "cuéntame", "háblame de", "qué sabes de",
+            "clima", "tiempo", "temperatura",
+        ]
+        
+        # Verificar si tiene algún tema de onboarding
+        tiene_tema_onboarding = any(t in texto_lower for t in temas_onboarding)
+        
+        # Verificar si tiene tema prohibido
+        tiene_tema_prohibido = any(t in texto_lower for t in temas_prohibidos)
+        
+        # Es fuera de tema si:
+        # 1. Tiene tema prohibido explícito, O
+        # 2. No tiene NADA de onboarding Y es una pregunta (tiene ?)
+        if tiene_tema_prohibido:
+            return True
+        
+        if not tiene_tema_onboarding and "?" in texto:
+            # Pregunta sin relación a onboarding
+            return True
+        
+        return False

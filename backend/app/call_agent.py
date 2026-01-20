@@ -495,6 +495,13 @@ class CallAgent:
                 await self._despedir_sin_respuesta()
                 return
 
+        # NUEVO: Verificar si es pregunta fuera de tema (no relacionada con onboarding)
+        if self.intent_detector.es_pregunta_fuera_de_tema(respuesta):
+            logger.info(f"🚫 Pregunta fuera de tema: '{respuesta}'")
+            await self._hablar_frases(["Disculpa, solo puedo ayudarte con temas de tu incorporación a la empresa. ¿Tienes alguna duda sobre tu primer día, horario, ubicación o demás?"])
+            return  # Vuelve a esperar_dudas
+
+
         # NUEVO: Verificar si es respuesta incoherente (mala transcripción)
         if self.intent_detector.es_respuesta_incoherente(respuesta):
             logger.warning(f"⚠️ Respuesta incoherente detectada: '{respuesta}'")
@@ -1493,7 +1500,7 @@ class CallAgent:
                     pg.actualizar_llamada(self.employee_id, "completada")
                 else:
                     pg.marcar_intento_fallido(self.employee_id, minutos_espera=5)
-                    pg.actualizar_llamada(self.em_actualizar_resultado_postgresployee_id, "fallida")
+                    pg.actualizar_llamada(self.employee_id, "fallida")
                 
                 pg.disconnect()
                 logger.info(f"📊 PostgreSQL actualizado: {resultado}")
@@ -1505,7 +1512,7 @@ class CallAgent:
         """Ordena colgar al sip-service"""
         try:
             requests.get("http://sip-service:8000/?b", timeout=0.5)
-            logger.info("📞 Llamada finalizada")
+            logger.info("📞 Comando colgar enviado")
         except requests.exceptions.Timeout:
             logger.info("📞 Llamada ya finalizada")
         except Exception as e:
