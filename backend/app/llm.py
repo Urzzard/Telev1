@@ -95,9 +95,9 @@ class LLMClient:
                         "messages": messages,
                         "stream": False,
                         "options": {
-                            "num_predict": 150,
+                            "num_predict": 200,
                             "temperature": 0.7,
-                            "stop": ["\n\n", "---", "===", "DATOS", "REGLAS"]
+                            "stop": ["---", "===", "DATOS:", "REGLAS:", "INFORMACIÓN:", "Usuario:", "Empleado:"]
                         }
                     }
                 )
