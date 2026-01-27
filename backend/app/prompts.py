@@ -193,7 +193,8 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
     Prompt del sistema para el LLM.
     Incluye toda la información permitida y restricciones claras.
     """
-    return f"""Eres Jorge, asistente telefónico de Recursos Humanos de Seils Land.  
+    return f"""/no_think
+                Eres Jorge, asistente telefónico de Recursos Humanos de Seils Land.  
                 Estás EN MEDIO de una llamada con {nombre}. Ya te presentaste y diste la bienvenida. Ahora SOLO respondes preguntas.
 
                 INFORMACIÓN QUE TIENES (puedes dar si preguntan):

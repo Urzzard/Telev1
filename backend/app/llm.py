@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import requests
+import re
 
 logger = logging.getLogger("LLM")
 
@@ -10,7 +11,7 @@ logger = logging.getLogger("LLM")
 class LLMClient:
     def __init__(self):
         self.base_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-        self.model = "phi4-mini"
+        self.model = "qwen3:8b"
         logger.info(f"🧠 Cliente LLM configurado ({self.model})")
         self._ensure_model_exists()
 
@@ -95,7 +96,7 @@ class LLMClient:
                         "messages": messages,
                         "stream": False,
                         "options": {
-                            "num_predict": 200,
+                            "num_predict": 250,
                             "temperature": 0.7,
                             "stop": ["---", "===", "DATOS:", "REGLAS:", "INFORMACIÓN:", "Usuario:", "Empleado:"]
                         }
@@ -104,12 +105,17 @@ class LLMClient:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    texto = data.get("message", {}).get("content", "").strip()
+                    texto_crudo = data.get("message", {}).get("content", "").strip()
+                    
+                    # DEBUG: Log de respuesta cruda
+                    logger.info(f"🔍 [DEBUG] Respuesta CRUDA del LLM ({len(texto_crudo)} chars): '{texto_crudo[:200]}...'")
                     
                     # Limpiar respuesta de artefactos
-                    texto = self._limpiar_respuesta(texto)
+                    texto = self._limpiar_respuesta(texto_crudo)
                     
-                    logger.info(f"🤖 LLM Respondió: {texto[:50]}...")
+                    # DEBUG: Log de respuesta limpia
+                    logger.info(f"🤖 LLM Respondió ({len(texto)} chars): '{texto[:100]}...'")
+                    
                     return texto
                 else:
                     logger.error(f"❌ Error LLM: {response.status_code}")
@@ -120,10 +126,21 @@ class LLMClient:
 
     def _limpiar_respuesta(self, texto: str) -> str:
         """Limpia artefactos de la respuesta del LLM"""
-        import re
+
+        # ========== NUEVO: Eliminar bloques <think>...</think> de Qwen3 ==========
+        # Qwen3 usa modo "thinking" que genera estos bloques
+        texto = re.sub(r'<think>.*?</think>', '', texto, flags=re.DOTALL | re.IGNORECASE)
+        texto = re.sub(r'<\|think\|>.*?<\|/think\|>', '', texto, flags=re.DOTALL)
         
-        # Eliminar "Ana:" al inicio o en medio
+        # También eliminar si quedó abierto (sin cerrar)
+        texto = re.sub(r'<think>.*$', '', texto, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Eliminar otros tokens especiales de Qwen3
+        texto = re.sub(r'<\|.*?\|>', '', texto)
+        
+        # Eliminar "Ana:" o "Jorge:" al inicio o en medio
         texto = re.sub(r'\bAna:\s*', '', texto)
+        texto = re.sub(r'\bJorge:\s*', '', texto)
         
         # Eliminar emojis
         texto = re.sub(r'[🌟😊👋🎉✨💼📧🏢⏰📍]', '', texto)

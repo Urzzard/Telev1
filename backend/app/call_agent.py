@@ -97,6 +97,7 @@ class CallAgent:
         self._cargar_empleado_postgres()
         
         self.intentos_confirmacion = 0
+        self.llamada_id = None
         self.MAX_INTENTOS = 3
         self.resultado_final = None
         self.resultado_registrado = False
@@ -1475,6 +1476,7 @@ class CallAgent:
             if pg.connect():
                 pg.registrar_turno_conversacion(
                     empleado_id=self.employee_id,
+                    llamada_id=self.llamada_id,
                     turno=self.turno_conversacion,
                     rol=rol,
                     texto=texto,
