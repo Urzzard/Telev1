@@ -95,10 +95,11 @@ class LLMClient:
                         "model": self.model,
                         "messages": messages,
                         "stream": False,
+                        "think": False,
                         "options": {
-                            "num_predict": 250,
+                            "num_predict": 500,
                             "temperature": 0.7,
-                            "stop": ["---", "===", "DATOS:", "REGLAS:", "INFORMACIÓN:", "Usuario:", "Empleado:"]
+                            #"stop": ["---", "===", "DATOS:", "REGLAS:", "INFORMACIÓN:", "Usuario:", "Empleado:"]
                         }
                     }
                 )

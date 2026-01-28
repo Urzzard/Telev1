@@ -221,7 +221,7 @@ class PostgresDB:
     # ==========================================
     
     def registrar_llamada(self, empleado_id: int, intento: int, 
-                          resultado: str, duracion: int = 0, notas: str = None):
+                          resultado: str, duracion: int = 0, notas: str = None) -> int:
         """Registra intento de llamada en historial"""
         with self.get_cursor() as cur:
             cur.execute("""
@@ -229,8 +229,11 @@ class PostgresDB:
                     empleado_id, intento, resultado, 
                     duracion_segundos, finalizada_en, notas
                 ) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+                RETURNING id
             """, (empleado_id, intento, resultado, duracion, notas))
-        logger.info(f"📝 Llamada registrada: emp={empleado_id}, resultado={resultado}")
+            llamada_id = cur.fetchone()["id"]
+        logger.info(f"📝 Llamada registrada: emp={empleado_id}, llamada_id={llamada_id}")
+        return llamada_id
     
     # ==========================================
     # ESTADÍSTICAS

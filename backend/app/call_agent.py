@@ -246,12 +246,34 @@ class CallAgent:
         except:
             return str(fecha_str) if fecha_str else "pronto"
 
+    def _obtener_llamada_activa(self) -> int:
+        """Obtiene el ID de la llamada activa para este empleado"""
+        try:
+            pg = get_postgres_db()
+            if pg.connect():
+                with pg.get_cursor() as cur:
+                    cur.execute("""
+                        SELECT id FROM llamadas 
+                        WHERE empleado_id = %s AND resultado = 'en_curso'
+                        ORDER BY iniciada_en DESC LIMIT 1
+                    """, (self.employee_id,))
+                    row = cur.fetchone()
+                    if row:
+                        return row["id"]
+                pg.disconnect()
+        except Exception as e:
+            logger.warning(f"⚠️ Error obteniendo llamada_id: {e}")
+        return None
+
 
     async def iniciar_conversacion(self):
         """Flujo principal usando máquina de estados"""
         logger.info(f"📞 Iniciando llamada para {self.nombre}")
         await self.llm.keepalive()
         await asyncio.sleep(0.5)
+
+        self.llamada_id = self._obtener_llamada_activa()
+        logger.info(f"📞 Llamada ID: {self.llamada_id}")
         
         llamada_completada = False
         
