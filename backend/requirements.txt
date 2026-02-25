@@ -5,6 +5,7 @@ requests
 python-dotenv
 
 openai-whisper
+faster-whisper
 numpy
 scipy
 aiohttp

@@ -28,6 +28,8 @@ services:
       #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
       - WHISPER_DEVICE=cuda
       - WHISPER_MODEL=small
+      # true para usar faster-whisper y false para usar openai-whisper
+      - USE_FASTER_WHISPER=true
 
       - SQLSERVER_HOST=${SQLSERVER_HOST}
       - SQLSERVER_PORT=${SQLSERVER_PORT}
