@@ -34,7 +34,7 @@ KEYWORDS_RESTRINGIDOS = {
     "contrato": ["contrato", "tipo de contrato", "duración", "duracion", "renovación", 
                  "renovacion", "indefinido", "temporal", "plazo"],
     "otros_empleados": ["compañeros", "companeros", "otros", "alguien más", "equipo", 
-                        "jefe", "gerente", "quien más"],
+                        "gerente", "quien más"],
 }
 
 
@@ -147,6 +147,9 @@ class IntentDetector:
             "contacto", "comunicar", "llamar",
             "rrhh", "recursos humanos",
             "dni", "documento",
+            "recepción", "recepcion",
+            "presentar", "presentarte", "presente",
+            "con quién", "con quien",
             # Confirmaciones/despedidas (permitidas)
             "gracias", "ok", "perfecto", "entiendo", "claro", "bien",
             "no", "nada más", "eso es todo", "chau", "adiós",

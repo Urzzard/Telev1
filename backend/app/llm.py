@@ -10,72 +10,71 @@ logger = logging.getLogger("LLM")
 
 class LLMClient:
     def __init__(self):
-        self.base_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-        self.model = "qwen3:8b"
-        logger.info(f"🧠 Cliente LLM configurado ({self.model})")
-        self._ensure_model_exists()
+        self.base_url = os.getenv("VLLM_URL", "http://vllm:8000")
+        self.model = os.getenv("VLLM_MODEL", "qwen3.5-2b")
+        logger.info(f"🧠 Cliente LLM configurado → vLLM ({self.model})")
 
-    def _ensure_model_exists(self):
-        """Verifica si el modelo existe en Ollama, si no, lo descarga."""
-        try:
-            res = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            if res.status_code == 200:
-                models = [m['name'] for m in res.json().get('models', [])]
-                if any(self.model in m for m in models):
-                    logger.info(f"✅ Modelo {self.model} ya está descargado.")
-                    return
+    # def _ensure_model_exists(self):
+    #     """Verifica si el modelo existe en Ollama, si no, lo descarga."""
+    #     try:
+    #         res = requests.get(f"{self.base_url}/api/tags", timeout=5)
+    #         if res.status_code == 200:
+    #             models = [m['name'] for m in res.json().get('models', [])]
+    #             if any(self.model in m for m in models):
+    #                 logger.info(f"✅ Modelo {self.model} ya está descargado.")
+    #                 return
 
-            logger.warning(f"⚠️ Modelo {self.model} no encontrado. Iniciando descarga...")
-            pull_res = requests.post(f"{self.base_url}/api/pull", json={"name": self.model}, stream=True)
+    #         logger.warning(f"⚠️ Modelo {self.model} no encontrado. Iniciando descarga...")
+    #         pull_res = requests.post(f"{self.base_url}/api/pull", json={"name": self.model}, stream=True)
             
-            if pull_res.status_code == 200:
-                logger.info(f"⬇️ Descargando {self.model}...")
-                for line in pull_res.iter_lines():
-                    if line:
-                        status = json.loads(line).get('status')
-                        if status == 'success':
-                            logger.info(f"✅ Modelo {self.model} descargado exitosamente.")
-                            return
-            else:
-                logger.error(f"❌ Falló la descarga del modelo: {pull_res.text}")
+    #         if pull_res.status_code == 200:
+    #             logger.info(f"⬇️ Descargando {self.model}...")
+    #             for line in pull_res.iter_lines():
+    #                 if line:
+    #                     status = json.loads(line).get('status')
+    #                     if status == 'success':
+    #                         logger.info(f"✅ Modelo {self.model} descargado exitosamente.")
+    #                         return
+    #         else:
+    #             logger.error(f"❌ Falló la descarga del modelo: {pull_res.text}")
 
-        except Exception as e:
-            logger.error(f"❌ Error verificando modelo Ollama: {e}")
+    #     except Exception as e:
+    #         logger.error(f"❌ Error verificando modelo Ollama: {e}")
 
     async def warmup(self):
-        """Pre-carga el modelo en GPU para evitar latencia en primera llamada"""
-        logger.info("🔥 Warming up LLM...")
+        """Pre-carga el modelo enviando un request mínimo"""
+        logger.info("🔥 Warming up LLM (vLLM)...")
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/chat",
+                    f"{self.base_url}/v1/chat/completions",
                     json={
                         "model": self.model,
                         "messages": [{"role": "user", "content": "Hola"}],
-                        "stream": False,
-                        "options": {"num_predict": 5}
+                        "max_tokens": 5,
+                        "chat_template_kwargs": {"enable_thinking": False}
                     }
                 )
                 if response.status_code == 200:
-                    logger.info("✅ LLM warm - modelo cargado en GPU")
+                    logger.info("✅ LLM warm - vLLM respondiendo")
                     return True
                 else:
-                    logger.warning(f"⚠️ Warmup respondió con código: {response.status_code}")
+                    logger.warning(f"⚠️ Warmup respondió: {response.status_code}")
         except Exception as e:
             logger.warning(f"⚠️ Warmup falló: {e}")
         return False
 
     async def keepalive(self):
-        """Ping mínimo para mantener el modelo en GPU"""
+        """Ping mínimo para mantener el modelo activo"""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/chat",
+                    f"{self.base_url}/v1/chat/completions",
                     json={
                         "model": self.model,
                         "messages": [{"role": "user", "content": "ok"}],
-                        "stream": False,
-                        "options": {"num_predict": 1}
+                        "max_tokens": 1,
+                        "chat_template_kwargs": {"enable_thinking": False}
                     }
                 )
                 if response.status_code == 200:
@@ -86,40 +85,33 @@ class LLMClient:
         return False
 
     async def generate_response(self, messages: list) -> str:
-        """Genera respuesta del LLM"""
+        """Genera respuesta del LLM via vLLM"""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/chat",
+                    f"{self.base_url}/v1/chat/completions",
                     json={
                         "model": self.model,
                         "messages": messages,
-                        "stream": False,
-                        "think": False,
-                        "options": {
-                            "num_predict": 500,
-                            "temperature": 0.7,
-                            #"stop": ["---", "===", "DATOS:", "REGLAS:", "INFORMACIÓN:", "Usuario:", "Empleado:"]
-                        }
+                        "max_tokens": 150,
+                        "temperature": 0.7,
+                        "chat_template_kwargs": {"enable_thinking": False}
                     }
                 )
-                
+
                 if response.status_code == 200:
                     data = response.json()
-                    texto_crudo = data.get("message", {}).get("content", "").strip()
-                    
-                    # DEBUG: Log de respuesta cruda
-                    logger.info(f"🔍 [DEBUG] Respuesta CRUDA del LLM ({len(texto_crudo)} chars): '{texto_crudo[:200]}...'")
-                    
-                    # Limpiar respuesta de artefactos
+                    # Formato OpenAI-compatible (diferente de Ollama)
+                    texto_crudo = data["choices"][0]["message"]["content"].strip()
+
+                    logger.info(f"🔍 [DEBUG] Respuesta CRUDA ({len(texto_crudo)} chars): '{texto_crudo[:200]}'")
+
                     texto = self._limpiar_respuesta(texto_crudo)
-                    
-                    # DEBUG: Log de respuesta limpia
-                    logger.info(f"🤖 LLM Respondió ({len(texto)} chars): '{texto[:100]}...'")
-                    
+
+                    logger.info(f"🤖 LLM Respondió ({len(texto)} chars): '{texto[:100]}'")
                     return texto
                 else:
-                    logger.error(f"❌ Error LLM: {response.status_code}")
+                    logger.error(f"❌ Error vLLM: {response.status_code} - {response.text[:100]}")
                     return ""
         except Exception as e:
             logger.error(f"❌ Error en generate_response: {e}")
@@ -189,7 +181,7 @@ class LLMClient:
             texto = re.sub(patron, '', texto, flags=re.IGNORECASE)
         
         # ========== NUEVO: Truncamiento inteligente ==========
-        MAX_CHARS = 250  # Aumentado de 200 a 250
+        MAX_CHARS = 300  # Aumentado de 250 a 400
         
         if len(texto) > MAX_CHARS:
             # Buscar el último punto FINAL de oración (no p.m., a.m., etc.)
@@ -235,6 +227,48 @@ class LLMClient:
         texto = re.sub(r'  +', ' ', texto)
         
         return texto.strip()
+
+    async def summarize(self, historial: list) -> str:
+        """Comprime el historial en un resumen conciso"""
+        historial_texto = "\n".join([
+            f"{'Usuario' if m['role'] == 'user' else 'Asistente'}: {m['content']}"
+            for m in historial
+        ])
+        
+        messages = [
+            {
+                "role": "system",
+                "content": """Eres un extractor de información. Lista SOLO los datos concretos mencionados en la conversación.
+                                Formato estricto: "[tema]: [dato exacto mencionado]"
+                                Ejemplo: "Horario: 9am-6pm con descanso 1-2pm. Dirección: Jirón Cachay 393 La Victoria."
+                                PROHIBIDO: inventar datos, agregar interpretaciones, mencionar personas."""
+            },
+            {
+                "role": "user",
+                "content": historial_texto
+            }
+        ]
+        
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "max_tokens": 120,  # ~100 tokens de resumen real
+                        "temperature": 0.3,  # más determinista para resúmenes
+                        "chat_template_kwargs": {"enable_thinking": False}
+                    }
+                )
+                if response.status_code == 200:
+                    resumen = response.json()["choices"][0]["message"]["content"].strip()
+                    logger.info(f"📝 Resumen generado ({len(resumen)} chars): '{resumen}'")
+                    return resumen
+        except Exception as e:
+            logger.warning(f"⚠️ Error generando resumen: {e}")
+        
+        return ""
 
 
 # ==================== SINGLETON ====================

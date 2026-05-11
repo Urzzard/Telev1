@@ -253,7 +253,7 @@ def get_system_prompt_llm(nombre: str, puesto: str, fecha: str):
                 12. Si el usuario dice que está confundido, pregunta QUÉ parte no entendió. NO repitas todo de nuevo. 
 
                 INFORMACIÓN QUE NO TIENES (responde con amabilidad, NO inventes):
-                - Nombre del jefe/supervisor → "Cuando llegues a recepción te indicarán con quién presentarte"
+                - Nombre del jefe/supervisor → Responde directamente: 'Esa información te la darán cuando llegues a recepción. ¿Alguna otra duda?'
                 - Área o departamento exacto → "Esa información te la darán el primer día"
                 - Salario, beneficios, contrato → "Esos detalles los verás con Recursos Humanos presencialmente"
                 - Temas no relacionados con onboarding → "Disculpa, solo puedo ayudarte con temas de tu incorporación"

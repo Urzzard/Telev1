@@ -9,10 +9,11 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir --upgrade pip
 
 # PyTorch con CUDA 12.8 (tu versión original)
-RUN pip3 install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128
+RUN pip3 install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+#RUN pip3 install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Instalar torchcodec para cargar audio
-RUN pip3 install --no-cache-dir torchcodec
+#RUN pip3 install --no-cache-dir torchcodec
 
 # Instalar versiones específicas que NO tienen el bug de coqpit
 RUN pip3 install --no-cache-dir "coqpit==0.0.17"

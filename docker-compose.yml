@@ -19,7 +19,9 @@ services:
       - whisper_cache:/root/.cache/whisper # Para no descargar el modelo cada vez
     environment:
       - TZ=America/Lima
-      - OLLAMA_URL=http://ollama:11434
+      #- OLLAMA_URL=http://ollama:11434
+      - VLLM_URL=http://172.17.0.1:8100
+      - VLLM_MODEL=qwen3.5-2b
       - TTS_URL=http://gemini-tts:5003
       - TTS_BACKEND=xtts
       - XTTS_URL=http://xtts:8020
@@ -45,7 +47,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-telefonista123}
     depends_on:
       - sip-service
-      - ollama
+      #- ollama
       #- gemini-tts
       - xtts
       - postgres
@@ -93,23 +95,23 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=-1
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_KEEP_ALIVE=-1
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
 
   postgres:
     image: postgres:15-alpine

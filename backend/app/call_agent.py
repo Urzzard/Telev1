@@ -21,6 +21,7 @@ from app.vad import VoiceActivityDetector
 import numpy as np
 import time
 from scipy import signal
+import time
 
 logger = logging.getLogger("CallAgent")
 
@@ -92,6 +93,8 @@ class CallAgent:
         
         # Memoria conversacional del LLM
         self.historial_llm = []
+        self.resumen_conversacion = ""
+        self.turnos_desde_ultimo_resumen = 0
         
         # Cargar datos del empleado desde PostgreSQL
         self._cargar_empleado_postgres()
@@ -547,7 +550,7 @@ class CallAgent:
 
     async def _estado_responder(self):
         """Responde usando LLM - valida tema antes de responder"""
-        import time
+        
         
         if self.ws.client_state.name != "CONNECTED":
             self.state = CallState.FINALIZADO
@@ -572,12 +575,16 @@ class CallAgent:
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
             
-            self.historial_llm.append({
-                "role": "user", 
-                "content": self.duda_actual
-            })
+            if self.resumen_conversacion:
+                system_prompt += f"\n\nTEMAS YA CUBIERTOS EN ESTA LLAMADA:\n{self.resumen_conversacion}"
+
+            pregunta_actual = {"role": "user", "content": self.duda_actual}
+
+            # Actualizar resumen si acumulamos 3 turnos nuevos
+            await self._actualizar_resumen()
+            self.historial_llm.append(pregunta_actual)
             
-            messages = [{"role": "system", "content": system_prompt}] + self.historial_llm
+            messages = [{"role": "system", "content": system_prompt}] + self.historial_llm[-4:]
             
             respuesta = await self.llm.generate_response(messages)
             
@@ -612,16 +619,6 @@ class CallAgent:
         # 6. Ya no preguntamos automáticamente - el LLM decide si incluir pregunta
         if self.barge_in_detected:
             logger.info("⏩ [FLUJO] Barge-in detectado, continuando...")
-
-        # # 6. Preguntar si hay más dudas (SOLO si no hubo barge-in)
-        # if not self.barge_in_detected:
-        #     if not await self._hablar_frases([get_pregunta_mas_dudas()]):
-        #         self.state = CallState.FINALIZADO
-        #         return
-        # else:
-        #     logger.info("⏩ [FLUJO] Saltando pregunta de dudas (hubo barge-in)")
-        #     # Muletilla rápida para que el usuario sepa que lo escuchamos
-        #     #await self._reproducir_muletilla()
         
         TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
         logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
@@ -1541,3 +1538,22 @@ class CallAgent:
             logger.info("📞 Llamada ya finalizada")
         except Exception as e:
             logger.warning(f"⚠️ Colgar: {e}")
+
+    async def _actualizar_resumen(self):
+        """Comprime el historial cada 3 turnos en un resumen"""
+        if len(self.historial_llm) >= 6:  # 3 pares user/assistant = 6 mensajes
+            logger.info("📝 Generando resumen del historial...")
+
+            historial_para_resumir = [
+                m for m in self.historial_llm 
+                if m['role'] == 'assistant'
+            ]
+            
+            if historial_para_resumir:
+                nuevo_resumen = await self.llm.summarize(historial_para_resumir)
+            
+            if nuevo_resumen:
+                self.resumen_conversacion = nuevo_resumen
+                self.historial_llm = []  # vaciar, el resumen lo reemplaza
+                self.turnos_desde_ultimo_resumen = 0
+                logger.info(f"✅ Historial comprimido. Resumen: '{nuevo_resumen[:80]}...'")
