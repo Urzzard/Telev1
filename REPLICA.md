@@ -23,8 +23,9 @@ git clone <url-de-tu-repo-telev1> /mnt/data/salesland/Telev1
 git clone https://github.com/remsky/Kokoro-FastAPI.git /mnt/data/salesland/Telev1/kokoro-service
 cd /mnt/data/salesland/Telev1/kokoro-service && git checkout c84adf35567a58d61843768869421adcd5370437
 
-# AI-Service (LLM)
-git clone <url-de-tu-repo-ai-service> /mnt/data/salesland/AI-Service
+# AI-Service (LLM) — no tiene repo propio, crear la carpeta y el archivo manualmente
+mkdir -p /mnt/data/salesland/AI-Service
+# Copiar el docker-compose.yml que está documentado más abajo en esta guía
 ```
 
 ---
@@ -79,6 +80,55 @@ docker compose -f /mnt/data/salesland/Telev1/docker-compose.yml logs -f backend
 
 # Verificar LLM
 curl http://localhost:8100/health
+```
+
+---
+
+## AI-Service — docker-compose.yml
+
+Crear el archivo en `/mnt/data/salesland/AI-Service/docker-compose.yml` con este contenido exacto:
+
+```yaml
+services:
+  vllm:
+    image: vllm/vllm-openai:latest@sha256:c32358ebfc115d56ade2acfdbcd00df5b115417dbd6006547c88f07e2b39de06
+    container_name: vllm-service
+    runtime: nvidia
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+    volumes:
+      - ./models:/root/.cache/huggingface
+    ports:
+      - "8100:8000"
+    command: >
+      --model Qwen/Qwen3.5-2B
+      --revision 15852e8c16360a2fea060d615a32b45270f8a8fc
+      --dtype float16
+      --max-model-len 2048
+      --gpu-memory-utilization 0.55
+      --max-num-seqs 32
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --language-model-only
+      --enforce-eager
+      --served-model-name qwen3.5-2b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
 ```
 
 ---
