@@ -11,16 +11,18 @@ RUN apt-get update && apt-get install -y \
 # 2. Crear usuario 'sipuser' (PulseAudio no debe correr como root)
 RUN useradd -m -s /bin/bash sipuser
 
-# 3. Compilar librería 're' (Dependencia de Baresip)
+# 3. Compilar librería 're' (Dependencia de Baresip) — commit probado en producción
 WORKDIR /home/sipuser
 RUN git clone https://github.com/baresip/re.git && \
-    cd re && cmake -B build -S . && \
+    cd re && git checkout f33a7bd7c55823574aef1ff9695f2d93d239771a && \
+    cmake -B build -S . && \
     cmake --build build && cmake --install build && ldconfig
 
-# 4. Compilar 'baresip'
+# 4. Compilar 'baresip' — commit probado en producción
 WORKDIR /home/sipuser
 RUN git clone https://github.com/baresip/baresip.git && \
-    cd baresip && cmake -B build -S . && \
+    cd baresip && git checkout 6b6b5d01e2bb34b9cc70aded330ef7ca0792d5f3 && \
+    cmake -B build -S . && \
     cmake --build build && cmake --install build && ldconfig
 
 # 5. Instalar librerías Python para el futuro Bridge (Audio y WebSockets)

@@ -1,22 +1,22 @@
-fastapi
-uvicorn[standard]
-websockets
-requests
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+websockets==16.0
+requests==2.32.3
 python-dotenv
 
-openai-whisper
-faster-whisper
-numpy
-scipy
-aiohttp
+openai-whisper==20250625
+faster-whisper==1.2.1
+numpy==2.3.3
+scipy==1.17.1
+aiohttp==3.13.3
 
-pandas
+pandas==3.0.1
 sqlalchemy
-pyodbc
+pyodbc==5.3.0
 
-python-multipart
+python-multipart==0.0.22
 
-httpx
+httpx==0.28.1
 
-pymssql
-psycopg2-binary
+pymssql==2.3.13
+psycopg2-binary==2.9.11

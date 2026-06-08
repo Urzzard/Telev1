@@ -54,3 +54,6 @@ xtts-service/*.json
 xtts-service/output/
 !xtts-service/Dockerfile
 !xtts-service/docker-compose-standalone.yml
+
+f5-service/cache/
+kokoro-service/

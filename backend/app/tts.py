@@ -91,24 +91,42 @@ class TextToSpeech:
         # Configuración XTTS
         self.xtts_speaker = os.getenv("XTTS_SPEAKER", "basic")
         self.xtts_language = os.getenv("XTTS_LANGUAGE", "es")
-        
+
+        # Configuración Kokoro
+        self.kokoro_url = os.getenv("KOKORO_URL", "http://kokoro:8880")
+        self.kokoro_voice = os.getenv("KOKORO_VOICE", "ef_dora")
+
+        # Configuración F5
+        self.f5_url = os.getenv("F5_URL", "http://f5:8881")
+
         logger.info(f"🔊 TTS Backend: {self.backend.upper()}")
         if self.backend == "xtts":
             logger.info(f"   URL: {self.xtts_url}")
             logger.info(f"   Speaker: {self.xtts_speaker}")
+        elif self.backend == "kokoro":
+            logger.info(f"   URL: {self.kokoro_url}")
+            logger.info(f"   Voice: {self.kokoro_voice}")
+        elif self.backend == "f5":
+            logger.info(f"   URL: {self.f5_url}")
         else:
             logger.info(f"   URL: {self.gemini_url}")
 
     async def synthesize(self, text: str):
         """
         Genera audio a partir de texto.
-        Retorna bytes de audio (MP3 para Gemini, WAV para XTTS).
+        Retorna bytes de audio WAV (XTTS/Kokoro) o MP3 (Gemini).
         """
         if not text:
             return None
-        
+
+        text = preparar_texto_para_tts(text)
+
         if self.backend == "xtts":
             return await self._synthesize_xtts(text)
+        elif self.backend == "kokoro":
+            return await self._synthesize_kokoro(text)
+        elif self.backend == "f5":
+            return await self._synthesize_f5(text)
         else:
             return await self._synthesize_gemini(text)
 
@@ -162,29 +180,126 @@ class TextToSpeech:
             logger.error(f"❌ [XTTS] Error conectando: {e}")
             return None
 
+    async def _synthesize_kokoro(self, text: str):
+        """Genera audio WAV completo usando Kokoro-FastAPI"""
+        url = f"{self.kokoro_url}/v1/audio/speech"
+        payload = {
+            "model": "kokoro",
+            "input": text,
+            "voice": self.kokoro_voice,
+            "response_format": "wav",
+            "speed": 0.92,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        audio_data = await response.read()
+                        logger.info(f"✅ [Kokoro] Audio generado ({len(audio_data)} bytes)")
+                        return audio_data
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [Kokoro] Error TTS: {response.status} - {error_text[:100]}")
+                        return None
+        except Exception as e:
+            logger.error(f"❌ [Kokoro] Error conectando: {e}")
+            return None
+
+    async def _synthesize_f5(self, text: str):
+        """Genera audio WAV completo usando F5-Spanish"""
+        url = f"{self.f5_url}/v1/audio/speech"
+        payload = {
+            "input": text,
+            "response_format": "wav",
+            "speed": 0.9,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        audio_data = await response.read()
+                        logger.info(f"✅ [F5] Audio generado ({len(audio_data)} bytes)")
+                        return audio_data
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [F5] Error TTS: {response.status} - {error_text[:100]}")
+                        return None
+        except Exception as e:
+            logger.error(f"❌ [F5] Error conectando: {e}")
+            return None
+
+    async def _synthesize_f5_stream(self, text: str):
+        """Streaming de audio PCM crudo desde F5-Spanish"""
+        url = f"{self.f5_url}/v1/audio/speech"
+        payload = {
+            "input": text,
+            "response_format": "pcm",
+            "speed": 0.9,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                    if response.status == 200:
+                        async for chunk in response.content.iter_chunked(4800):
+                            if chunk:
+                                yield chunk
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [F5] Error stream: {response.status} - {error_text[:100]}")
+        except Exception as e:
+            logger.error(f"❌ [F5] Error en streaming: {e}")
+
+    async def _synthesize_kokoro_stream(self, text: str):
+        """Streaming de audio PCM crudo desde Kokoro-FastAPI (sin cabecera WAV)"""
+        url = f"{self.kokoro_url}/v1/audio/speech"
+        payload = {
+            "model": "kokoro",
+            "input": text,
+            "voice": self.kokoro_voice,
+            "response_format": "pcm",
+            "speed": 1.0,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        async for chunk in response.content.iter_chunked(4800):
+                            if chunk:
+                                yield chunk
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [Kokoro] Error stream: {response.status} - {error_text[:100]}")
+        except Exception as e:
+            logger.error(f"❌ [Kokoro] Error en streaming: {e}")
+
     async def synthesize_stream(self, text: str):
-        """
-        Streaming de audio (solo Gemini por ahora).
-        XTTS streaming tiene bugs, usamos modo normal.
-        """
+        """Streaming de audio. Kokoro y Gemini usan streaming real, XTTS genera completo."""
         if not text:
             return
 
-        # NUEVO: Preprocesar texto para TTS natural
         text = preparar_texto_para_tts(text)
-        
+
         if self.backend == "xtts":
-            # XTTS: Fallback a síntesis normal (streaming tiene bugs)
             logger.info(f"🎤 [XTTS] Generando audio (sin streaming): '{text[:30]}...'")
             audio_data = await self._synthesize_xtts(text)
             if audio_data:
-                # Enviar todo el audio como un solo chunk
                 yield audio_data
             return
-        
-        # Gemini: Streaming real
+
+        if self.backend == "kokoro":
+            logger.info(f"🎤 [Kokoro] Streaming: '{text[:30]}...'")
+            async for chunk in self._synthesize_kokoro_stream(text):
+                yield chunk
+            return
+
+        if self.backend == "f5":
+            logger.info(f"🎤 [F5] Streaming: '{text[:30]}...'")
+            async for chunk in self._synthesize_f5_stream(text):
+                yield chunk
+            return
+
+        # Gemini: streaming real
         url = f"{self.gemini_url}/stream"
-        
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json={"text": text}) as response:
@@ -200,4 +315,6 @@ class TextToSpeech:
 
     def get_audio_format(self) -> str:
         """Retorna el formato de audio del backend actual"""
-        return "wav" if self.backend == "xtts" else "mp3"
+        if self.backend in ("xtts", "kokoro", "f5"):
+            return "wav"
+        return "mp3"

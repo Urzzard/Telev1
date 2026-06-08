@@ -724,7 +724,7 @@ class CallAgent:
         # =========================================
         
         # Usar audio pre-capturado del barge-in si existe
-        if self.barge_in_detected and len(self.barge_in_audio) > 3200:  # >200ms de audio
+        if self.barge_in_detected and len(self.barge_in_audio) > 800:  # >50ms de audio
             buffer = bytearray(self.barge_in_audio)
             logger.info(f"🔄 [VAD] Usando {len(buffer)} bytes pre-capturados del barge-in")
             

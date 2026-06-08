@@ -23,7 +23,7 @@ services:
       - VLLM_URL=http://172.17.0.1:8100
       - VLLM_MODEL=qwen3.5-2b
       - TTS_URL=http://gemini-tts:5003
-      - TTS_BACKEND=xtts
+      - TTS_BACKEND=f5
       - XTTS_URL=http://xtts:8020
       - SIP_URL=http://sip-service:8000
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
@@ -32,6 +32,13 @@ services:
       - WHISPER_MODEL=small
       # true para usar faster-whisper y false para usar openai-whisper
       - USE_FASTER_WHISPER=true
+
+      # Kokoro TTS
+      - KOKORO_URL=http://kokoro:8880
+      - KOKORO_VOICE=em_alex
+
+      # F5 TTS
+      - F5_URL=http://f5:8881
 
       - SQLSERVER_HOST=${SQLSERVER_HOST}
       - SQLSERVER_PORT=${SQLSERVER_PORT}
@@ -49,7 +56,9 @@ services:
       - sip-service
       #- ollama
       #- gemini-tts
-      - xtts
+      #- xtts      # descomentar si se cambia TTS_BACKEND=xtts
+      #- kokoro    # descomentar si se cambia TTS_BACKEND=kokoro
+      - f5
       - postgres
     deploy:
       resources:
@@ -73,27 +82,27 @@ services:
   #     - GOOGLE_APPLICATION_CREDENTIALS=/app/gemini-tts.json
   #   restart: always
 
-  xtts:
-    build: ./xtts-service
-    container_name: xtts_server
-    ports:
-      - "8020:8020"
-    volumes:
-      - ./xtts-service/models:/xtts_models
-      - ./xtts-service/output:/output
-      - ./xtts-service/speakers:/speakers
-    environment:
-      - COQUI_TOS_AGREED=1
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
+  # xtts:                      # descomentar bloque completo para volver a XTTS
+  #   build: ./xtts-service
+  #   container_name: xtts_server
+  #   ports:
+  #     - "8020:8020"
+  #   volumes:
+  #     - ./xtts-service/models:/xtts_models
+  #     - ./xtts-service/output:/output
+  #     - ./xtts-service/speakers:/speakers
+  #   environment:
+  #     - COQUI_TOS_AGREED=1
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
 
   # ollama:
   #   image: ollama/ollama:latest
@@ -112,6 +121,50 @@ services:
   #           - driver: nvidia
   #             count: 1
   #             capabilities: [gpu]
+
+  f5:
+    build:
+      context: ./f5-service
+      dockerfile: Dockerfile
+    image: f5-spanish:local
+    container_name: f5_tts
+    ports:
+      - "8881:8881"
+    volumes:
+      - ./f5-service/voices:/app/voices
+      - ./f5-service/cache:/app/cache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # kokoro:                     # descomentar bloque completo para volver a Kokoro
+  #   build:
+  #     context: ./kokoro-service
+  #     dockerfile: docker/gpu/Dockerfile
+  #   container_name: kokoro_tts
+  #   ports:
+  #     - "8880:8880"
+  #   environment:
+  #     - USE_GPU=true
+  #     - PYTHONUNBUFFERED=1
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
 
   postgres:
     image: postgres:15-alpine
