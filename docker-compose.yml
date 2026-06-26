@@ -23,7 +23,7 @@ services:
       - VLLM_URL=http://172.17.0.1:8100
       - VLLM_MODEL=qwen3.5-2b
       - TTS_URL=http://gemini-tts:5003
-      - TTS_BACKEND=f5
+      - TTS_BACKEND=cosyvoice
       - XTTS_URL=http://xtts:8020
       - SIP_URL=http://sip-service:8000
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
@@ -39,6 +39,11 @@ services:
 
       # F5 TTS
       - F5_URL=http://f5:8881
+
+      # CosyVoice3 TTS (activo)
+      - COSYVOICE_URL=http://cosyvoice:8030
+      - COSYVOICE_VOICE=salesland
+      - COSYVOICE_SPEED=1.0
 
       - SQLSERVER_HOST=${SQLSERVER_HOST}
       - SQLSERVER_PORT=${SQLSERVER_PORT}
@@ -58,7 +63,8 @@ services:
       #- gemini-tts
       #- xtts      # descomentar si se cambia TTS_BACKEND=xtts
       #- kokoro    # descomentar si se cambia TTS_BACKEND=kokoro
-      - f5
+      #- f5        # comentado: se reemplaza por cosyvoice-service (libera ~2-3GB VRAM)
+      - cosyvoice  # TTS activo
       - postgres
     deploy:
       resources:
@@ -122,18 +128,45 @@ services:
   #             count: 1
   #             capabilities: [gpu]
 
-  f5:
+  # f5:                          # COMENTADO: se reemplaza por cosyvoice-service.
+  #   build:                     # F5 ya construido (imagen f5-spanish:local) y modelos en ./f5-service/cache.
+  #     context: ./f5-service    # Descomentar todo este bloque + el depends_on de arriba para volver a F5.
+  #     dockerfile: Dockerfile
+  #   image: f5-spanish:local
+  #   container_name: f5_tts
+  #   ports:
+  #     - "8881:8881"
+  #   volumes:
+  #     - ./f5-service/voices:/app/voices
+  #     - ./f5-service/cache:/app/cache
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
+
+  cosyvoice:                   # TTS ACTIVO — CosyVoice3 (reemplaza a F5)
     build:
-      context: ./f5-service
+      context: ./cosyvoice-service
       dockerfile: Dockerfile
-    image: f5-spanish:local
-    container_name: f5_tts
+    image: cosyvoice3-service:local
+    container_name: cosyvoice_tts
     ports:
-      - "8881:8881"
+      - "8030:8030"
     volumes:
-      - ./f5-service/voices:/app/voices
-      - ./f5-service/cache:/app/cache
+      - ./cosyvoice-service/voices:/app/voices   # selector de voces (suelta <nombre>.wav+.txt y reinicia)
+      - cosyvoice_models:/models                 # modelo ~8.5GB + spk2info.pt (persiste, no se re-descarga)
     environment:
+      - DEFAULT_VOICE=salesland
+      - COSYVOICE_SPEED=1.0
+      - TEXT_FRONTEND=0          # 0 = números en español nativo
+      - WARMUP=1
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
@@ -214,3 +247,7 @@ services:
 volumes:
   ollama_data:
   whisper_cache:
+  cosyvoice_models:
+    # Reutiliza el volumen donde ya se descargó el modelo (cero re-descarga).
+    # En un clon nuevo, Docker lo auto-crea y el servicio baja el modelo en el 1er arranque.
+    name: cosyvoice-service_cosyvoice_models

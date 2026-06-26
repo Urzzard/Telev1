@@ -99,6 +99,11 @@ class TextToSpeech:
         # Configuración F5
         self.f5_url = os.getenv("F5_URL", "http://f5:8881")
 
+        # Configuración CosyVoice3
+        self.cosyvoice_url = os.getenv("COSYVOICE_URL", "http://cosyvoice:8030")
+        self.cosyvoice_voice = os.getenv("COSYVOICE_VOICE", "salesland")
+        self.cosyvoice_speed = float(os.getenv("COSYVOICE_SPEED", "1.0"))
+
         logger.info(f"🔊 TTS Backend: {self.backend.upper()}")
         if self.backend == "xtts":
             logger.info(f"   URL: {self.xtts_url}")
@@ -108,6 +113,9 @@ class TextToSpeech:
             logger.info(f"   Voice: {self.kokoro_voice}")
         elif self.backend == "f5":
             logger.info(f"   URL: {self.f5_url}")
+        elif self.backend == "cosyvoice":
+            logger.info(f"   URL: {self.cosyvoice_url}")
+            logger.info(f"   Voice: {self.cosyvoice_voice}")
         else:
             logger.info(f"   URL: {self.gemini_url}")
 
@@ -127,6 +135,8 @@ class TextToSpeech:
             return await self._synthesize_kokoro(text)
         elif self.backend == "f5":
             return await self._synthesize_f5(text)
+        elif self.backend == "cosyvoice":
+            return await self._synthesize_cosyvoice(text)
         else:
             return await self._synthesize_gemini(text)
 
@@ -249,6 +259,52 @@ class TextToSpeech:
         except Exception as e:
             logger.error(f"❌ [F5] Error en streaming: {e}")
 
+    async def _synthesize_cosyvoice(self, text: str):
+        """Genera audio WAV completo usando CosyVoice3"""
+        url = f"{self.cosyvoice_url}/v1/audio/speech"
+        payload = {
+            "input": text,
+            "voice": self.cosyvoice_voice,
+            "response_format": "wav",
+            "speed": self.cosyvoice_speed,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        audio_data = await response.read()
+                        logger.info(f"✅ [CosyVoice] Audio generado ({len(audio_data)} bytes)")
+                        return audio_data
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [CosyVoice] Error TTS: {response.status} - {error_text[:100]}")
+                        return None
+        except Exception as e:
+            logger.error(f"❌ [CosyVoice] Error conectando: {e}")
+            return None
+
+    async def _synthesize_cosyvoice_stream(self, text: str):
+        """Streaming de audio PCM crudo (int16 24kHz) desde CosyVoice3"""
+        url = f"{self.cosyvoice_url}/v1/audio/speech"
+        payload = {
+            "input": text,
+            "voice": self.cosyvoice_voice,
+            "response_format": "pcm",
+            "speed": self.cosyvoice_speed,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                    if response.status == 200:
+                        async for chunk in response.content.iter_chunked(4800):
+                            if chunk:
+                                yield chunk
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ [CosyVoice] Error stream: {response.status} - {error_text[:100]}")
+        except Exception as e:
+            logger.error(f"❌ [CosyVoice] Error en streaming: {e}")
+
     async def _synthesize_kokoro_stream(self, text: str):
         """Streaming de audio PCM crudo desde Kokoro-FastAPI (sin cabecera WAV)"""
         url = f"{self.kokoro_url}/v1/audio/speech"
@@ -298,6 +354,12 @@ class TextToSpeech:
                 yield chunk
             return
 
+        if self.backend == "cosyvoice":
+            logger.info(f"🎤 [CosyVoice] Streaming: '{text[:30]}...'")
+            async for chunk in self._synthesize_cosyvoice_stream(text):
+                yield chunk
+            return
+
         # Gemini: streaming real
         url = f"{self.gemini_url}/stream"
         try:
@@ -315,6 +377,6 @@ class TextToSpeech:
 
     def get_audio_format(self) -> str:
         """Retorna el formato de audio del backend actual"""
-        if self.backend in ("xtts", "kokoro", "f5"):
+        if self.backend in ("xtts", "kokoro", "f5", "cosyvoice"):
             return "wav"
         return "mp3"

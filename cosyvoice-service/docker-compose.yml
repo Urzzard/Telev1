@@ -1,0 +1,31 @@
+# Compose STANDALONE para la prueba aislada (Fase 1) de cosyvoice-service.
+# No toca el backend ni el compose principal de TELEV1 (eso es la Fase 3).
+#   docker compose up -d --build      # build + arranque (1er arranque baja el modelo ~8.5GB)
+#   docker compose logs -f cosyvoice  # ver carga del modelo / registro de voz / warmup
+services:
+  cosyvoice:
+    build: .
+    image: cosyvoice3-service:local
+    container_name: cosyvoice-service
+    ports:
+      - "8030:8030"
+    volumes:
+      - ./voices:/app/voices          # selector de voces: suelta <nombre>.wav + <nombre>.txt y reinicia
+      - cosyvoice_models:/models      # modelo (~8.5GB) + spk2info.pt — persiste, no se re-descarga
+    environment:
+      - DEFAULT_VOICE=salesland
+      - COSYVOICE_SPEED=1.0
+      - TEXT_FRONTEND=0               # 0 = números en español nativo
+      - WARMUP=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  cosyvoice_models:
