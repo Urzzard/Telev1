@@ -36,7 +36,7 @@ class SQLServerDB:
                 timeout=30,
                 login_timeout=10
             )
-            logger.info(f"✅ Conectado a SQL Server: {self.config['server']}")
+            logger.info(f"✅ Conectado a SQL Server: SPRING")
             return True
         except Exception as e:
             logger.error(f"❌ Error conectando a SQL Server: {e}")

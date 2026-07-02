@@ -13,7 +13,7 @@ CREATE TABLE empleados (
     fecha_ingreso DATE,
     
     -- Control de llamadas (diseño simplificado)
-    estado VARCHAR(20) DEFAULT 'PENDIENTE',  -- PENDIENTE, EXITO, TERMINADO
+    estado VARCHAR(20) DEFAULT 'PENDIENTE',  -- PENDIENTE (por llamar) · EN_LLAMADA (llamada activa) · EXITO (contactado ok) · TERMINADO (3 intentos fallidos)
     intentos INTEGER DEFAULT 0,
     
     -- Timestamps
@@ -27,7 +27,7 @@ CREATE TABLE llamadas (
     id SERIAL PRIMARY KEY,
     empleado_id INTEGER REFERENCES empleados(id),
     intento INTEGER NOT NULL,
-    resultado VARCHAR(30) NOT NULL,
+    resultado VARCHAR(30) NOT NULL,  -- en_curso (inicial) · completada · fallida · buzon
     duracion_segundos INTEGER DEFAULT 0,
     iniciada_en TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     finalizada_en TIMESTAMPTZ,

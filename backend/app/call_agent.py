@@ -5,10 +5,8 @@ import re
 import aiohttp
 from app.tts import TextToSpeech
 from app.stt import get_stt
-#from app.database import EmployeeRepository
 from app.states import CallState
 from app.llm import get_llm
-from app.prompts import get_system_prompt_llm
 from app.intent_detector import IntentDetector
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
@@ -21,60 +19,11 @@ from app.vad import VoiceActivityDetector
 import numpy as np
 import time
 from scipy import signal
-import time
 
 logger = logging.getLogger("CallAgent")
 
-# Mapeo de categorías a muletillas contextuales
-# SMART_FILLERS = {
-#     "salario": "Entiendo que quieras saber sobre la remuneración...",
-#     "horario": "A ver, déjame confirmarte el horario...",
-#     "ubicacion": "La dirección exacta es...",
-#     "primer_dia": "Sobre tu primer día...",
-#     "general": "Mmm, déjame ver..." # Default
-# }
-
 
 class CallAgent:
-    #    USANDO CSV
-    # def __init__(self, websocket, employee_id: int):
-    #     self.ws = websocket
-    #     self.employee_id = employee_id
-    #     self.tts = TextToSpeech()
-    #     self.stt = get_stt()
-    #     self.llm = get_llm()
-    #     self.db = EmployeeRepository()
-    #     self.intent_detector = IntentDetector()
-        
-    #     # Audio config
-    #     self.BYTES_PER_SECOND = 16000
-    #     self.SAMPLE_RATE = 8000
-        
-    #     # Estado
-    #     self.state = CallState.DETECTAR_BUZON
-    #     self.duracion_marcado = 0
-        
-    #     # Memoria conversacional del LLM
-    #     self.historial_llm = []
-        
-    #     # Cargar datos del empleado
-    #     self.employee = self.db.get_employee_by_id(self.employee_id)
-    #     self.intentos_confirmacion = 0
-    #     self.MAX_INTENTOS = 3
-
-    #     self.resultado_final = None
-        
-    #     if self.employee:
-    #         self.nombre = self.employee.get('nombre', 'colaborador')
-    #         self.puesto = self.employee.get('puesto', 'nuevo ingreso')
-    #         self.fecha_inicio = self.employee.get('fecha_inicio', 'pronto')
-    #         logger.info(f"📋 Empleado cargado: {self.nombre} - {self.puesto}")
-    #     else:
-    #         self.nombre = "colaborador"
-    #         self.puesto = "nuevo ingreso"
-    #         self.fecha_inicio = "pronto"
-    #         logger.error(f"❌ Empleado con ID {self.employee_id} no encontrado")
-
     def __init__(self, websocket, employee_id: int):
         self.ws = websocket
         self.employee_id = employee_id
@@ -106,7 +55,6 @@ class CallAgent:
         self.resultado_registrado = False
         self.turno_conversacion = 0
 
-        self.intent_detector = IntentDetector()
         self.vad = VoiceActivityDetector(sample_rate=8000)
 
         self.barge_in_detected = False
@@ -119,27 +67,6 @@ class CallAgent:
         # Pre-generación de bienvenida en paralelo
         self.audio_bienvenida_pregenerado = None
         self.tarea_pregenerar_bienvenida = None
-
-    async def _reproducir_muletilla(self):
-        """Reproduce una muletilla breve para indicar que estamos escuchando."""
-        import random
-        
-        muletillas = ["Ajá", "Sí", "Claro", "Te escucho"]
-        muletilla = random.choice(muletillas)
-        
-        logger.info(f"💬 [MULETILLA] '{muletilla}'")
-        
-        try:
-            # Generar audio con XTTS
-            audio_data = await self.tts.synthesize(muletilla)
-            if audio_data and self.ws and self.ws.client_state.name == "CONNECTED":
-                pcm_data = self._audio_to_pcm(audio_data)
-                # Enviar solo 0.5s máximo (8000 bytes a 8kHz mono 16-bit)
-                chunk = pcm_data[:min(len(pcm_data), 8000)]
-                await self.ws.send_bytes(chunk)
-                await asyncio.sleep(0.3)
-        except Exception as e:
-            logger.warning(f"⚠️ Muletilla falló: {e}")
 
     def _cargar_empleado_postgres(self):
         """Carga datos del empleado desde PostgreSQL"""
@@ -351,8 +278,6 @@ class CallAgent:
 
     async def _estado_presentacion(self):
         """Saludo y verificación de identidad - USA AUDIO PRE-GENERADO SI EXISTE"""
-        import numpy as np
-        from scipy import signal
         
         # Esperar a que termine la pre-generación (si aún está corriendo)
         if self.tarea_pregenerar_saludo:
@@ -442,8 +367,6 @@ class CallAgent:
 
     async def _estado_bienvenida(self):
         """Da la bienvenida - USA AUDIO PRE-GENERADO SI EXISTE"""
-        import numpy as np
-        from scipy import signal
         
         # Esperar a que termine la pre-generación (si aún está corriendo)
         if self.tarea_pregenerar_bienvenida:
@@ -567,10 +490,7 @@ class CallAgent:
         # 2. Registrar pregunta
         self.intent_detector.registrar_pregunta(self.duda_actual)
 
-        # 3. Muletilla deshabilitada temporalmente (tiene bug)
-        # await self._reproducir_muletilla(categoria)
-        
-        # 4. Generar respuesta con LLM
+        # 3. Generar respuesta con LLM
         t_llm_inicio = time.time()
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
@@ -862,158 +782,6 @@ class CallAgent:
         texto_completo = " ".join(frases)
         return await self._hablar_con_streaming_real(texto_completo)
 
-    async def _hablar_con_streaming(self, texto: str) -> bool:
-        """
-        Divide el texto en oraciones y hace pipeline:
-        genera la siguiente mientras reproduce la actual.
-        No corta en a.m., p.m., etc.
-        """
-        # Proteger abreviaciones antes de dividir
-        texto_protegido = texto.replace("a.m.", "a·m·").replace("p.m.", "p·m·")
-        texto_protegido = texto_protegido.replace("A.M.", "A·M·").replace("P.M.", "P·M·")
-        texto_protegido = texto_protegido.replace("Sr.", "Sr·").replace("Sra.", "Sra·")
-        texto_protegido = texto_protegido.replace("Dr.", "Dr·").replace("Dra.", "Dra·")
-        
-        # Dividir en oraciones
-        oraciones = re.split(r'(?<=[.!?])\s+', texto_protegido.strip())
-        
-        # Restaurar abreviaciones y limpiar
-        oraciones = [
-            o.strip()
-            .replace("a·m·", "a.m.").replace("p·m·", "p.m.")
-            .replace("A·M·", "A.M.").replace("P·M·", "P.M.")
-            .replace("Sr·", "Sr.").replace("Sra·", "Sra.")
-            .replace("Dr·", "Dr.").replace("Dra·", "Dra.")
-            for o in oraciones if o.strip() and len(o.strip()) > 2
-        ]
-        
-        if not oraciones:
-            return True
-        
-        if len(oraciones) == 1:
-            # Solo una oración, generar y reproducir normal
-            audio = await self._generar_audio(oraciones[0])
-            if audio:
-                return await self._reproducir(audio[0], audio[1])
-            return True
-        
-        logger.info(f"🔊 Streaming {len(oraciones)} oraciones...")
-        
-        # Pipeline: generar siguiente mientras reproduce actual
-        tarea_siguiente = None
-        audio_actual = None
-        
-        for i, oracion in enumerate(oraciones):
-            # Obtener audio actual
-            if tarea_siguiente:
-                # Esperar el audio que se estaba generando en paralelo
-                audio_actual = await tarea_siguiente
-            else:
-                # Primera oracion - generar ahora
-                audio_actual = await self._generar_audio(oracion)
-            
-            # Iniciar generación de la siguiente (si hay más)
-            if i + 1 < len(oraciones):
-                tarea_siguiente = asyncio.create_task(
-                    self._generar_audio(oraciones[i + 1])
-                )
-            else:
-                tarea_siguiente = None
-            
-            # Reproducir audio actual mientras se genera el siguiente
-            if audio_actual:
-                pcm_data, duracion = audio_actual
-                if not await self._reproducir(pcm_data, duracion):
-                    # Usuario colgó - cancelar tarea pendiente
-                    if tarea_siguiente:
-                        tarea_siguiente.cancel()
-                    return False
-        
-        return True
-
-
-    def _es_backchannel(self, texto: str) -> bool:
-        """
-        Detecta si el texto es solo una confirmación/backchannel.
-        Estos NO deben interrumpir la conversación.
-        """
-        if not texto:
-            return True
-        
-        texto_lower = texto.lower().strip()
-
-        #CUSTIONABLE
-        texto_limpio = texto_lower.rstrip('.,!?')
-        texto_limpio = texto_limpio.replace(',', ' ').replace('  ', ' ').strip()
-
-        palabras = texto_limpio.split()
-        
-        # Lista de backchannels comunes
-        backchannels_exactos = [
-            # Confirmaciones simples
-            "ok", "okey", "okay", "vale", "bien", "bueno", "ya",
-            "sí", "si", "ajá", "aja", "mjm", "mhm", "ah",
-            "claro", "dale", "sale", "va",
-            # Confirmaciones elaboradas
-            "perfecto", "genial", "entiendo", "entendido",
-            "de acuerdo", "listo", "correcto", "exacto", "excelente",
-            "ok perfecto", "ok listo", "perfecto gracias", "ok gracias",
-            "ah ok", "ah perfecto", "ya perfecto", "listo perfecto",
-            # Verificaciones de audio
-            "escucha", "escuchá", "me escuchas", "se escucha", 
-            "te escucho", "sí te escucho", "ahora sí",
-            "hola", "aló", "alo", "bueno",
-            # Respuestas cortas
-            "está bien", "esta bien", "muy bien", "qué bien",
-            "ah ok", "ah ya", "ya veo", "ah bueno",
-            # Agradecimientos (NO son preguntas)
-            "gracias", "muchas gracias", "gracias a todos", "ok gracias",
-            "muy amable", "perfecto gracias", "genial gracias",
-        ]
-
-        if texto_limpio in backchannels_exactos:
-            return True
-        
-        # Si el texto completo es un backchannel conocido
-        # for bc in backchannels:
-        #     if texto_lower == bc or texto_lower == bc + ".":
-        #         return True
-        
-        # Si tiene 3 palabras o menos y no contiene palabras interrogativas
-        if len(palabras) <= 4:
-            # Palabras interrogativas = NO es backchannel
-            interrogativas = [
-                "qué", "que", "cuál", "cual", "cómo", "como", 
-                "dónde", "donde", "cuándo", "cuando", "por qué",
-                "quién", "quien", "cuánto", "cuanto"
-            ]
-            if any(q in texto_lower for q in interrogativas):
-                return False
-            
-            # Indicadores de querer información = NO es backchannel
-            indicadores_pregunta = [
-                "quisiera", "gustaría", "gustaria", "quiero",
-                "puedes", "podrías", "podrias", "dime", "cuéntame",
-                "explica", "repite", "repetir"
-            ]
-            if any(ind in texto_lower for ind in indicadores_pregunta):
-                return False
-            
-            # Si solo tiene palabras de backchannel/relleno
-            palabras_backchannel = [
-                "ok", "sí", "si", "no", "ya", "ah", "oh", "bueno", "bien",
-                "gracias", "claro", "vale", "perfecto", "genial",
-                "a", "todos", "todo", "para", "por", "muy", "muchas"
-            ]
-            es_solo_backchannels = all(
-                p in palabras_backchannel for p in palabras
-            )
-            if es_solo_backchannels:
-                return True
-        
-        return False
-
-    
     def _es_confirmacion_o_backchannel(self, texto: str) -> bool:
         """
         Detecta si el usuario está confirmando/aceptando información.
@@ -1142,8 +910,6 @@ class CallAgent:
         Reproduce audio SIN monitorear barge-in.
         Usado para despedidas donde no queremos interrupciones.
         """
-        import numpy as np
-        from scipy import signal
         
         if self.ws.client_state.name != "CONNECTED":
             return False
@@ -1198,8 +964,6 @@ class CallAgent:
         NUEVO: Monitorea audio entrante para detectar barge-in.
         MEJORADO: Activa barge-in solo después de enviar primeros chunks.
         """
-        import numpy as np
-        from scipy import signal
         
         if self.ws.client_state.name != "CONNECTED":
             return False
@@ -1307,78 +1071,6 @@ class CallAgent:
                     pass
 
 
-    async def _generar_audio(self, texto):
-        """Genera audio TTS"""
-        try:
-            texto_limpio = self._limpiar_texto_para_tts(texto)
-        
-            audio_mp3 = await self.tts.synthesize(texto_limpio)
-            if not audio_mp3:
-                return None
-            
-            pcm_data = self._audio_to_pcm(audio_mp3)
-            duracion = len(pcm_data) / self.BYTES_PER_SECOND
-            return (pcm_data, duracion)
-        except Exception as e:
-            logger.error(f"❌ Error generando audio: {e}")
-            return None
-
-    async def _reproducir(self, pcm_data, duracion) -> bool:
-        """Transmite audio por WebSocket con diagnóstico mejorado"""
-        chunk_size = 1024
-        total_enviado = 0
-        
-        for i in range(0, len(pcm_data), chunk_size):
-            try:
-                if self.ws.client_state.name != "CONNECTED":
-                    logger.warning(f"⚠️ WebSocket cerrado después de enviar {total_enviado} bytes")
-                    return False
-                
-                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
-                total_enviado += chunk_size
-                await asyncio.sleep(0.002)
-            except Exception as e:
-                logger.warning(f"⚠️ Error enviando audio después de {total_enviado} bytes: {e}")
-                return False
-        
-        # Esperar duración en intervalos para detectar desconexión temprana
-        tiempo_restante = duracion
-        while tiempo_restante > 0:
-            if self.ws.client_state.name != "CONNECTED":
-                logger.warning(f"⚠️ WebSocket cerrado durante espera de reproducción")
-                return False
-            await asyncio.sleep(min(0.1, tiempo_restante))
-            tiempo_restante -= 0.1
-        
-        return True
-
-    def _limpiar_texto_para_tts(self, texto: str) -> str:
-        """Limpia texto que podría ser rechazado por el TTS"""
-        # Palabras/frases que Gemini TTS puede rechazar
-        reemplazos = [
-            ("detalles personales", "información"),
-            ("datos personales", "información"),
-            ("información personal", "información"),
-            ("contactar directamente", "comunicarte"),
-            ("usuario", "nombre"),
-        ]
-        
-        texto_limpio = texto
-        for original, reemplazo in reemplazos:
-            texto_limpio = texto_limpio.replace(original, reemplazo)
-        
-        return texto_limpio
-
-    def _audio_to_pcm(self, audio_bytes):
-        """Convierte audio (MP3 o WAV) a PCM 8kHz mono"""
-        import subprocess
-        process = subprocess.Popen(
-            ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '8000', 'pipe:1'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
-        pcm_data, _ = process.communicate(input=audio_bytes)
-        return pcm_data
-
     def _es_confirmacion(self, texto: str) -> bool:
         """Detecta si el usuario confirma"""
         patterns = [
@@ -1398,91 +1090,6 @@ class CallAgent:
         texto_lower = texto.lower()
         return any(re.search(p, texto_lower) for p in patterns)
 
-    def _es_negacion_simple(self, texto: str) -> bool:
-        """Detecta negación como respuesta a '¿alguna duda?'"""
-        texto_lower = texto.lower().strip()
-        
-        # Si menciona querer saber/preguntar = NO es negación
-        indicadores_pregunta = [
-            # Verbos de preguntar
-            "pregunt",  # pregunta, preguntaba, preguntando, preguntarte
-            "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
-            "puedes decirme", "podrías decirme", "podrias decirme",
-            # Interrogativos
-            "cuál es", "cual es", "cómo es", "como es",
-            "dónde", "donde", "cuándo", "cuando",
-            "qué es", "que es", "qué hay", "que hay",
-            # Verbos de conocimiento
-            "tienes el", "tienes la", "tienes los",
-            "sabes", "conoces", "me dices", "me puedes",
-            # Temas
-            "sobre el", "sobre la", "sobre los", "sobre las",
-            "acerca de", "información", "informacion",
-            "horario", "dirección", "direccion", "portal",
-            "una pregunta", "otra pregunta", "una duda", "otra duda",
-            # Peticiones
-            "necesito", "quiero", "me interesa",
-        ]
-        
-        if any(ind in texto_lower for ind in indicadores_pregunta):
-            return False
-        
-        indicadores_no = [
-            "no,", "no.", "no tengo", "no gracias", "no, gracias",
-            "ninguna duda", "ninguna pregunta",
-            "de momento no", "por ahora no", 
-            "eso es todo", "eso era todo", "era todo",
-            "nada más", "nada mas",
-            "todo claro", "todo bien", "estoy bien",
-            "muy amable", "muchas gracias"
-        ]
-        
-        # Debe contener indicador de negación Y NO contener indicador de pregunta
-        return any(ind in texto_lower for ind in indicadores_no)
-
-    def _es_despedida(self, texto: str) -> bool:
-        """Detecta si el usuario quiere terminar"""
-        texto_lower = texto.lower()
-        
-        # Si menciona querer saber/preguntar = NO es despedida
-        indicadores_pregunta = [
-            # Verbos de preguntar
-            "pregunt",  # pregunta, preguntaba, preguntando, preguntarte
-            "quisiera saber", "me gustaría", "me gustaria", "quiero saber",
-            "puedes decirme", "podrías decirme", "podrias decirme",
-            # Interrogativos
-            "cuál es", "cual es", "cómo es", "como es",
-            "dónde", "donde", "cuándo", "cuando",
-            "qué es", "que es", "qué hay", "que hay",
-            # Verbos de conocimiento
-            "tienes el", "tienes la", "tienes los",
-            "sabes", "conoces", "me dices", "me puedes",
-            # Temas
-            "sobre el", "sobre la", "sobre los", "sobre las",
-            "acerca de", "información", "informacion",
-            "horario", "dirección", "direccion", "portal",
-            "una pregunta", "otra pregunta", "una duda", "otra duda",
-            # Peticiones
-            "necesito", "quiero", "me interesa",
-        ]
-        
-        if any(ind in texto_lower for ind in indicadores_pregunta):
-            return False
-        
-        # Contiene "gracias" + alguna forma de cierre definitivo
-        if "gracias" in texto_lower:
-            cierres = ["no", "nada", "eso es todo", "era todo", "momento", "ya no", "listo"]
-            if any(c in texto_lower for c in cierres):
-                return True
-        
-        # Despedidas directas
-        despedidas = ["chau", "adiós", "adios", "hasta luego", "bye", "nos vemos", "me despido"]
-        if any(d in texto_lower for d in despedidas):
-            return True
-        
-        return False
-
-    
     def _registrar_turno(self, rol: str, texto: str, categoria: str = None, confianza: float = None):
         """Registra turno de conversación para fine-tuning"""
         if not texto or len(texto) < 2:
@@ -1549,9 +1156,10 @@ class CallAgent:
                 if m['role'] == 'assistant'
             ]
             
+            nuevo_resumen = ""
             if historial_para_resumir:
                 nuevo_resumen = await self.llm.summarize(historial_para_resumir)
-            
+
             if nuevo_resumen:
                 self.resumen_conversacion = nuevo_resumen
                 self.historial_llm = []  # vaciar, el resumen lo reemplaza

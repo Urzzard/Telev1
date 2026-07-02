@@ -63,6 +63,9 @@ Reusa los campos existentes, solo cambia su semántica:
 | `derivar_directo` | temas para humano | salario, contrato, beneficios → "eso lo verás con RRHH" |
 | `documento` / `autor` | procedencia (opcional) | "RRHH/Onboarding/manual.pdf" |
 
+> **Semilla ya preparada:** ver `docs/PROMPT_ACTUAL_Y_SEED_RAG.md` §1 (10 entradas con `titulo`/`sintomas`/
+> `pasos`/`categoria`/`derivar_directo` listas para cargar, ya separadas de las reglas de comportamiento).
+
 ### Semilla inicial (migrar `EMPRESA_INFO` de `prompts.py` → 5-6 entradas de KB)
 horario · ubicacion · portal_empleado · primer_dia (qué hacer) · documentos · (puesto/fecha = del empleado, NO en KB).
 Los temas restringidos (salario, contrato, beneficios, vacaciones) se cargan con `derivar_directo=true`

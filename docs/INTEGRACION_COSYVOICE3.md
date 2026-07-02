@@ -160,6 +160,12 @@ Pasos para enchufar una mejor toma:
 ---
 
 ## 5. RIESGOS / DECISIONES ABIERTAS
+- ✅ **VRAM OOM — RESUELTO (2026-06-30):** la llamada del 2026-06-26 disparó CUDA OOM en el pico de
+  síntesis (4 consumidores ≈ 14.1GB base reventaban los 16GB). **Fix:** vLLM `--gpu-memory-utilization
+  0.50→0.46` (solo eso). Verificado en llamada real: sin OOM, 4 consumidores = **12,334/16,303 MiB**,
+  concurrencia vLLM 15.2x (≥8 que necesitamos), latencia ~3s. Matiz: pico de síntesis llegó a ~14GB
+  (≈2.3GB libres) y la VRAM con varias llamadas SIMULTÁNEAS aún no se probó. Detalle y leveres de
+  reserva en `docs/LIMPIEZA_Y_REFACTOR.md` → "BLOQUEANTE VRAM — RESUELTO".
 - **Concurrencia real esperada:** ¿cuántas llamadas simultáneas? Define si la Fase 6 es necesaria ya
   o más adelante. (Con default, 1 llamada va perfecta a ~1.1s TTFB.)
 - ~~**Ubicación del modelo de 8.5GB**~~ → RESUELTO: auto-descarga de ModelScope a volumen Docker
@@ -170,6 +176,8 @@ Pasos para enchufar una mejor toma:
 
 ---
 
-## 6. ROLLBACK (volver a F5 en 1 minuto)
-En `docker-compose.yml`: descomentar el servicio `f5` + su `depends_on: - f5`, poner `TTS_BACKEND=f5`,
-comentar `cosyvoice`, y `docker compose up -d`. F5 ya está construido (imagen `f5-spanish:local`).
+## 6. ROLLBACK
+F5 y Kokoro **se eliminaron** del proyecto (2026-06-26, decisión del usuario): borrados de `tts.py`,
+`docker-compose.yml` y la carpeta `f5-service/`. Ya NO hay rollback a F5 por compose.
+- Para revertir a F5/Kokoro: `git` (están en el historial, commit previo a la limpieza).
+- Backends que SIGUEN conmutables en `tts.py`: `cosyvoice` (activo), `xtts`, `gemini` (vía `TTS_BACKEND`).

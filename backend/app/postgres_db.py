@@ -31,7 +31,7 @@ class PostgresDB:
         """Establece conexión"""
         try:
             self.connection = psycopg2.connect(**self.config)
-            logger.info(f"✅ Conectado a PostgreSQL: {self.config['host']}:{self.config['port']}")
+            logger.info(f"✅ Conectado a PostgreSQL: BD Interna de llamadas")
             return True
         except Exception as e:
             logger.error(f"❌ Error conectando a PostgreSQL: {e}")
@@ -186,12 +186,12 @@ class PostgresDB:
                 """, (nuevos_intentos, empleado_id))
                 logger.warning(f"⚠️ Empleado {empleado_id} → TERMINADO (3 intentos)")
             else:
-                # Usar SQL puro para evitar problemas de timezone
+                # make_interval pasa los minutos como parámetro entero (robusto, sin %s dentro del literal)
                 cur.execute("""
-                    UPDATE empleados 
-                    SET estado = 'PENDIENTE', 
-                        intentos = %s, 
-                        proxima_llamada = CURRENT_TIMESTAMP + INTERVAL '%s minutes',
+                    UPDATE empleados
+                    SET estado = 'PENDIENTE',
+                        intentos = %s,
+                        proxima_llamada = CURRENT_TIMESTAMP + make_interval(mins => %s),
                         actualizado_en = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (nuevos_intentos, minutos_espera, empleado_id))
@@ -210,11 +210,26 @@ class PostgresDB:
         """Marca empleado como EN_LLAMADA (llamada activa)"""
         with self.get_cursor() as cur:
             cur.execute("""
-                UPDATE empleados 
-                SET estado = 'EN_LLAMADA'
+                UPDATE empleados
+                SET estado = 'EN_LLAMADA', actualizado_en = CURRENT_TIMESTAMP
                 WHERE id = %s
             """, (empleado_id,))
         logger.info(f"📞 Empleado {empleado_id} → EN_LLAMADA")
+
+    def resetear_llamadas_colgadas(self, minutos: int = 10) -> int:
+        """Watchdog: devuelve a PENDIENTE las llamadas EN_LLAMADA colgadas
+        (más de `minutos` sin actualizar) para no bloquear la cola para siempre."""
+        with self.get_cursor() as cur:
+            cur.execute("""
+                UPDATE empleados
+                SET estado = 'PENDIENTE', actualizado_en = CURRENT_TIMESTAMP
+                WHERE estado = 'EN_LLAMADA'
+                  AND actualizado_en < CURRENT_TIMESTAMP - make_interval(mins => %s)
+            """, (minutos,))
+            n = cur.rowcount
+        if n:
+            logger.warning(f"🐕 Watchdog: {n} llamada(s) colgada(s) devuelta(s) a PENDIENTE (>{minutos}min EN_LLAMADA)")
+        return n
     
     # ==========================================
     # REGISTRO DE LLAMADAS

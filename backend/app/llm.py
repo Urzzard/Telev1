@@ -1,8 +1,6 @@
 import httpx
 import logging
 import os
-import json
-import requests
 import re
 
 logger = logging.getLogger("LLM")
@@ -13,33 +11,6 @@ class LLMClient:
         self.base_url = os.getenv("VLLM_URL", "http://vllm:8000")
         self.model = os.getenv("VLLM_MODEL", "qwen3.5-2b")
         logger.info(f"🧠 Cliente LLM configurado → vLLM ({self.model})")
-
-    # def _ensure_model_exists(self):
-    #     """Verifica si el modelo existe en Ollama, si no, lo descarga."""
-    #     try:
-    #         res = requests.get(f"{self.base_url}/api/tags", timeout=5)
-    #         if res.status_code == 200:
-    #             models = [m['name'] for m in res.json().get('models', [])]
-    #             if any(self.model in m for m in models):
-    #                 logger.info(f"✅ Modelo {self.model} ya está descargado.")
-    #                 return
-
-    #         logger.warning(f"⚠️ Modelo {self.model} no encontrado. Iniciando descarga...")
-    #         pull_res = requests.post(f"{self.base_url}/api/pull", json={"name": self.model}, stream=True)
-            
-    #         if pull_res.status_code == 200:
-    #             logger.info(f"⬇️ Descargando {self.model}...")
-    #             for line in pull_res.iter_lines():
-    #                 if line:
-    #                     status = json.loads(line).get('status')
-    #                     if status == 'success':
-    #                         logger.info(f"✅ Modelo {self.model} descargado exitosamente.")
-    #                         return
-    #         else:
-    #             logger.error(f"❌ Falló la descarga del modelo: {pull_res.text}")
-
-    #     except Exception as e:
-    #         logger.error(f"❌ Error verificando modelo Ollama: {e}")
 
     async def warmup(self):
         """Pre-carga el modelo enviando un request mínimo"""
@@ -101,7 +72,7 @@ class LLMClient:
 
                 if response.status_code == 200:
                     data = response.json()
-                    # Formato OpenAI-compatible (diferente de Ollama)
+                    # Formato OpenAI-compatible
                     texto_crudo = data["choices"][0]["message"]["content"].strip()
 
                     logger.info(f"🔍 [DEBUG] Respuesta CRUDA ({len(texto_crudo)} chars): '{texto_crudo[:200]}'")

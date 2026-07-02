@@ -26,6 +26,7 @@ logger = logging.getLogger("Scheduler")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL_MINUTES", 5)) * 60
 CALL_INTERVAL = int(os.getenv("CALL_INTERVAL_SECONDS", 30))
 RETRY_DELAY = int(os.getenv("RETRY_DELAY_MINUTES", 4))
+WATCHDOG_MINUTOS = int(os.getenv("WATCHDOG_MINUTOS", 10))
 HORARIO_INICIO = int(os.getenv("HORARIO_INICIO", 9))
 HORARIO_FIN = int(os.getenv("HORARIO_FIN", 18))
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
@@ -101,7 +102,10 @@ def procesar_cola():
     try:
         if not pg.connect():
             return
-        
+
+        # Watchdog: liberar llamadas colgadas (>WATCHDOG_MINUTOS) antes de evaluar si hay una activa
+        pg.resetear_llamadas_colgadas(minutos=WATCHDOG_MINUTOS)
+
         # Verificar si hay una llamada EN_LLAMADA (activa)
         if pg.hay_llamada_activa():
             logger.info("📞 Hay una llamada activa, esperando...")

@@ -16,7 +16,7 @@ services:
     volumes:
       - ./backend:/app            # Para desarrollo (hot reload)
       #- ./data:/app/data          # Para leer CSVs
-      - whisper_cache:/root/.cache/whisper # Para no descargar el modelo cada vez
+      - whisper_cache:/root/.cache/huggingface # Cache de faster-whisper (HF hub) para no re-descargar el modelo
     environment:
       - TZ=America/Lima
       #- OLLAMA_URL=http://ollama:11434
@@ -28,17 +28,7 @@ services:
       - SIP_URL=http://sip-service:8000
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
       #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
-      - WHISPER_DEVICE=cuda
       - WHISPER_MODEL=small
-      # true para usar faster-whisper y false para usar openai-whisper
-      - USE_FASTER_WHISPER=true
-
-      # Kokoro TTS
-      - KOKORO_URL=http://kokoro:8880
-      - KOKORO_VOICE=em_alex
-
-      # F5 TTS
-      - F5_URL=http://f5:8881
 
       # CosyVoice3 TTS (activo)
       - COSYVOICE_URL=http://cosyvoice:8030
@@ -62,8 +52,6 @@ services:
       #- ollama
       #- gemini-tts
       #- xtts      # descomentar si se cambia TTS_BACKEND=xtts
-      #- kokoro    # descomentar si se cambia TTS_BACKEND=kokoro
-      #- f5        # comentado: se reemplaza por cosyvoice-service (libera ~2-3GB VRAM)
       - cosyvoice  # TTS activo
       - postgres
     deploy:
@@ -128,30 +116,7 @@ services:
   #             count: 1
   #             capabilities: [gpu]
 
-  # f5:                          # COMENTADO: se reemplaza por cosyvoice-service.
-  #   build:                     # F5 ya construido (imagen f5-spanish:local) y modelos en ./f5-service/cache.
-  #     context: ./f5-service    # Descomentar todo este bloque + el depends_on de arriba para volver a F5.
-  #     dockerfile: Dockerfile
-  #   image: f5-spanish:local
-  #   container_name: f5_tts
-  #   ports:
-  #     - "8881:8881"
-  #   volumes:
-  #     - ./f5-service/voices:/app/voices
-  #     - ./f5-service/cache:/app/cache
-  #   environment:
-  #     - NVIDIA_VISIBLE_DEVICES=all
-  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
-  #   restart: unless-stopped
-
-  cosyvoice:                   # TTS ACTIVO — CosyVoice3 (reemplaza a F5)
+  cosyvoice:                   # TTS ACTIVO — CosyVoice3
     build:
       context: ./cosyvoice-service
       dockerfile: Dockerfile
@@ -162,6 +127,7 @@ services:
     volumes:
       - ./cosyvoice-service/voices:/app/voices   # selector de voces (suelta <nombre>.wav+.txt y reinicia)
       - cosyvoice_models:/models                 # modelo ~8.5GB + spk2info.pt (persiste, no se re-descarga)
+      - cosyvoice_modelscope:/root/.cache/modelscope  # FST de wetext (~15MB) para no re-descargar en cada arranque
     environment:
       - DEFAULT_VOICE=salesland
       - COSYVOICE_SPEED=1.0
@@ -177,27 +143,6 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
-
-  # kokoro:                     # descomentar bloque completo para volver a Kokoro
-  #   build:
-  #     context: ./kokoro-service
-  #     dockerfile: docker/gpu/Dockerfile
-  #   container_name: kokoro_tts
-  #   ports:
-  #     - "8880:8880"
-  #   environment:
-  #     - USE_GPU=true
-  #     - PYTHONUNBUFFERED=1
-  #     - NVIDIA_VISIBLE_DEVICES=all
-  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
-  #   restart: unless-stopped
 
   postgres:
     image: postgres:15-alpine
@@ -251,3 +196,4 @@ volumes:
     # Reutiliza el volumen donde ya se descargó el modelo (cero re-descarga).
     # En un clon nuevo, Docker lo auto-crea y el servicio baja el modelo en el 1er arranque.
     name: cosyvoice-service_cosyvoice_models
+  cosyvoice_modelscope:
