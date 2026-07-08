@@ -17,6 +17,7 @@ services:
       - ./backend:/app            # Para desarrollo (hot reload)
       #- ./data:/app/data          # Para leer CSVs
       - whisper_cache:/root/.cache/huggingface # Cache de faster-whisper (HF hub) para no re-descargar el modelo
+      - torch_hub_cache:/root/.cache/torch     # Cache de Silero VAD (torch.hub) para no re-descargar en cada arranque
     environment:
       - TZ=America/Lima
       #- OLLAMA_URL=http://ollama:11434
@@ -29,6 +30,8 @@ services:
       #- DB_TYPE=csv  # Cambiaremos a 'mssql' cuando estés listo
       #- DB_CONNECTION_STRING=mssql+pyodbc://user:pass@host/db
       - WHISPER_MODEL=small
+      # TEMPORAL (Fase A): captura muestras de audio del STT en ./backend/stt_samples para el banco de pruebas. Quitar luego.
+      - STT_DUMP_DIR=/app/stt_samples
 
       # CosyVoice3 TTS (activo)
       - COSYVOICE_URL=http://cosyvoice:8030
@@ -192,6 +195,7 @@ services:
 volumes:
   ollama_data:
   whisper_cache:
+  torch_hub_cache:   # Silero VAD (torch.hub) — evita re-descargar el zipball en cada arranque
   cosyvoice_models:
     # Reutiliza el volumen donde ya se descargó el modelo (cero re-descarga).
     # En un clon nuevo, Docker lo auto-crea y el servicio baja el modelo en el 1er arranque.

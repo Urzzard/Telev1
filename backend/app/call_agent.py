@@ -291,28 +291,9 @@ class CallAgent:
         # Usar audio pre-generado si existe
         if self.audio_saludo_pregenerado:
             logger.info("🚀 [PRE-GEN] Usando saludo pre-generado (latencia reducida)")
-            
-            # Convertir WAV a PCM 8kHz y enviar
-            audio_24k = np.frombuffer(self.audio_saludo_pregenerado[44:], dtype=np.int16)  # Skip WAV header
-            audio_8k = signal.resample_poly(audio_24k, 1, 3)
-            audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
-            
-            # Enviar audio
-            total_bytes = len(audio_8k.tobytes())
-            chunk_size = 1600  # 100ms chunks
-            pcm_data = audio_8k.tobytes()
-            
-            for i in range(0, len(pcm_data), chunk_size):
-                if self.ws.client_state.name != "CONNECTED":
-                    self.state = CallState.FINALIZADO
-                    return
-                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
-                await asyncio.sleep(0.05)
-            
-            # Esperar reproducción
-            duracion = total_bytes / 16000
-            await asyncio.sleep(duracion)
-            
+            if not await self._reproducir_audio_pregenerado(self.audio_saludo_pregenerado):
+                self.state = CallState.FINALIZADO
+                return
         else:
             # Fallback: generar normalmente
             logger.info("⚠️ [PRE-GEN] Sin audio pre-generado, generando ahora...")
@@ -380,26 +361,9 @@ class CallAgent:
         # Usar audio pre-generado si existe
         if self.audio_bienvenida_pregenerado:
             logger.info("🚀 [PRE-GEN] Usando bienvenida pre-generada (latencia reducida)")
-            
-            # Convertir WAV a PCM 8kHz y enviar
-            audio_24k = np.frombuffer(self.audio_bienvenida_pregenerado[44:], dtype=np.int16)
-            audio_8k = signal.resample_poly(audio_24k, 1, 3)
-            audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
-            
-            # Enviar audio
-            total_bytes = len(audio_8k.tobytes())
-            chunk_size = 1600
-            pcm_data = audio_8k.tobytes()
-            
-            for i in range(0, len(pcm_data), chunk_size):
-                if self.ws.client_state.name != "CONNECTED":
-                    self.state = CallState.FINALIZADO
-                    return
-                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
-                await asyncio.sleep(0.05)
-            
-            duracion = total_bytes / 16000
-            await asyncio.sleep(duracion)
+            if not await self._reproducir_audio_pregenerado(self.audio_bienvenida_pregenerado):
+                self.state = CallState.FINALIZADO
+                return
         else:
             # Fallback: generar normalmente
             logger.info("⚠️ [PRE-GEN] Sin bienvenida pre-generada, generando ahora...")
@@ -578,19 +542,49 @@ class CallAgent:
         """Captura audio inicial y detecta si es buzón"""
         logger.info("🔍 Verificando si es buzón de voz...")
         
+        # Parámetros de endpoint-por-silencio (ver docs/PLAN_TURNTAKING_NATURALIDAD.md §1)
+        CEILING = 3.0          # techo duro: el buzón continuo llega hasta aquí
+        PISO_MIN = 1.0         # no permitir corte antes de 1s (evita cortar la 1ª sílaba)
+        SILENCIO_CORTE = 0.7   # silencio continuo tras hablar = fin de turno (humano esperando)
+
+        self.vad.reset()
+
         buffer = bytearray()
         tiempo_inicio = asyncio.get_event_loop().time()
-        tiempo_limite = 3.0
+        t_ultima_voz = None
+        corte_por_silencio = False
         
-        while (asyncio.get_event_loop().time() - tiempo_inicio) < tiempo_limite:
+        while (asyncio.get_event_loop().time() - tiempo_inicio) < CEILING:
             try:
                 data = await asyncio.wait_for(self.ws.receive_bytes(), timeout=0.1)
                 buffer.extend(data)
+
+                resultado = self.vad.process_chunk(data)
+                ahora = asyncio.get_event_loop().time()
+
+                if resultado["is_speech"]:
+                    t_ultima_voz = ahora
+
+                # Endpoint: hubo voz y luego silencio continuo suficiente, pasado el piso mínimo.
+                # El buzón habla continuo → no acumula silencio → corre hasta el techo.
+                if self.vad.speech_started and t_ultima_voz is not None:
+                    silencio = ahora - t_ultima_voz
+                    transcurrido = ahora - tiempo_inicio
+                    if silencio >= SILENCIO_CORTE and transcurrido >= PISO_MIN:
+                        corte_por_silencio = True
+                        logger.info(
+                            f"⚡ [BUZÓN] Fin de turno detectado "
+                            f"({transcurrido*1000:.0f}ms, silencio {silencio*1000:.0f}ms)"
+                        )
+                        break
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 logger.error(f"❌ Error capturando audio: {e}")
                 break
+
+        if not corte_por_silencio:
+            logger.info("⏳ [BUZÓN] Sin fin de turno claro; capturado hasta el techo (3s)")
         
         if len(buffer) < 8000:
             logger.warning("⚠️ Audio insuficiente")
@@ -781,6 +775,71 @@ class CallAgent:
         """Reproduce frases usando streaming real"""
         texto_completo = " ".join(frases)
         return await self._hablar_con_streaming_real(texto_completo)
+
+    async def _reproducir_audio_pregenerado(self, audio_wav: bytes) -> bool:
+        """Reproduce audio WAV pre-generado (24k) como PCM 8k, CON monitoreo de barge-in.
+
+        Antes esta reproducción hacía send + sleep ciego, sin leer el canal: si el usuario
+        contestaba encima o justo al terminar la frase, ese audio se perdía y el eco acumulado
+        confundía al VAD en la escucha siguiente (causa de la "doble pregunta"). Ahora el monitor
+        de barge-in consume el canal y captura el inicio de la respuesta en self.barge_in_audio,
+        que _escuchar_respuesta reutiliza.
+        """
+        if self.ws.client_state.name != "CONNECTED":
+            return False
+
+        # Reset estado de barge-in
+        self.barge_in_detected = False
+        self.barge_in_audio = bytearray()
+
+        # Convertir WAV 24k → PCM 8k
+        audio_24k = np.frombuffer(audio_wav[44:], dtype=np.int16)  # Skip WAV header
+        audio_8k = signal.resample_poly(audio_24k, 1, 3)
+        audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+        pcm_data = audio_8k.tobytes()
+        total_bytes = len(pcm_data)
+        chunk_size = 1600  # 100ms chunks
+
+        monitor_task = None
+        chunks_enviados = 0
+
+        try:
+            # Envío de audio (activa barge-in tras 5 chunks, como el streaming real)
+            for i in range(0, len(pcm_data), chunk_size):
+                if self.ws.client_state.name != "CONNECTED":
+                    return False
+                if monitor_task and self.barge_in_detected:
+                    logger.info("🛑 [PRE-GEN] Cortando reproducción por barge-in")
+                    break
+                await self.ws.send_bytes(pcm_data[i:i+chunk_size])
+                chunks_enviados += 1
+                if chunks_enviados == 5 and monitor_task is None:
+                    logger.info("👂 [PRE-GEN] Activando monitoreo barge-in")
+                    monitor_task = asyncio.create_task(self._monitorear_barge_in())
+                await asyncio.sleep(0.05)
+
+            # Espera de reproducción (con corte por barge-in)
+            if not self.barge_in_detected:
+                if monitor_task is None:
+                    monitor_task = asyncio.create_task(self._monitorear_barge_in())
+                tiempo_restante = total_bytes / 16000
+                while tiempo_restante > 0:
+                    if self.ws.client_state.name != "CONNECTED":
+                        return False
+                    if self.barge_in_detected:
+                        logger.info("🛑 [PRE-GEN] Barge-in durante espera")
+                        break
+                    await asyncio.sleep(min(0.1, tiempo_restante))
+                    tiempo_restante -= 0.1
+
+            return True
+        finally:
+            if monitor_task:
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
 
     def _es_confirmacion_o_backchannel(self, texto: str) -> bool:
         """

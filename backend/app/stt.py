@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import tempfile
@@ -73,6 +74,18 @@ class FasterWhisperSTT:
 
             wav.write(tmp_file, 8000, audio_data)
 
+            # Fase A (instrumentación): volcar el WAV para el banco de pruebas offline del STT.
+            # Gated por env var → APAGADO en operación normal. Set STT_DUMP_DIR para capturar muestras.
+            dump_dir = os.getenv("STT_DUMP_DIR")
+            if dump_dir:
+                try:
+                    os.makedirs(dump_dir, exist_ok=True)
+                    fname = os.path.join(dump_dir, f"stt_{int(time.time()*1000)}.wav")
+                    wav.write(fname, 8000, audio_data)
+                    logger.info(f"💾 [STT-DUMP] {fname}")
+                except Exception as e:
+                    logger.warning(f"⚠️ [STT-DUMP] no se pudo guardar: {e}")
+
             segments, info = self.model.transcribe(
                 tmp_file,
                 language="es",
@@ -81,7 +94,22 @@ class FasterWhisperSTT:
                 vad_parameters=dict(min_silence_duration_ms=500)
             )
 
-            texto = " ".join([s.text for s in segments]).strip()
+            seg_list = list(segments)
+            texto = " ".join([s.text for s in seg_list]).strip()
+
+            # Fase A (instrumentación): loguear las señales de confianza de Whisper SIN cambiar
+            # el comportamiento todavía. Con estos números fijaremos los umbrales de la puerta (Fase C).
+            if seg_list:
+                avg_logprob = sum(s.avg_logprob for s in seg_list) / len(seg_list)
+                no_speech = max(s.no_speech_prob for s in seg_list)
+                compression = max(s.compression_ratio for s in seg_list)
+                logger.info(
+                    f"📊 [STT-CONF] no_speech={no_speech:.2f} avg_logprob={avg_logprob:.2f} "
+                    f"compression={compression:.2f} segs={len(seg_list)} dur={info.duration:.1f}s "
+                    f"texto='{texto}'"
+                )
+            else:
+                logger.info("📊 [STT-CONF] sin segmentos (VAD filtró todo el audio)")
 
             if not self._es_texto_valido(texto):
                 logger.warning(f"⚠️ Texto filtrado (alucinación): '{texto[:50]}'")
