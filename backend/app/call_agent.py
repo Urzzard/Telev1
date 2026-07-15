@@ -11,7 +11,7 @@ from app.intent_detector import IntentDetector
 from app.prompts import (
     get_saludo, get_presentacion, get_verificacion,
     get_bienvenida, get_despedida_ok, get_despedida_error,
-    get_despedida_sin_respuesta,
+    get_despedida_sin_respuesta, get_reidentificacion,
     get_system_prompt_llm, get_pregunta_mas_dudas
 )
 from app.postgres_db import get_postgres_db
@@ -310,13 +310,13 @@ class CallAgent:
         self.state = CallState.ESPERAR_CONFIRMACION
 
     async def _estado_esperar_confirmacion(self):
-        """Escucha si confirma identidad"""
+        """Escucha si confirma identidad — TURN-HANDLER (clasificar_turno, estado=IDENTIDAD)."""
 
         # Iniciar pre-generación de bienvenida en paralelo (si no existe ya)
         if self.tarea_pregenerar_bienvenida is None and self.audio_bienvenida_pregenerado is None:
             self.tarea_pregenerar_bienvenida = asyncio.create_task(self._pregenerar_bienvenida())
         respuesta = await self._escuchar_respuesta()
-        
+
         if not respuesta:
             self.intentos_confirmacion += 1
             if self.intentos_confirmacion >= self.MAX_INTENTOS:
@@ -325,20 +325,28 @@ class CallAgent:
                 return
             await self._hablar_frases(["¿Hola? ¿Me escuchas?"])
             return
-    
-        # NUEVO: Verificar si es respuesta incoherente (mala transcripción)
-        if self.intent_detector.es_respuesta_incoherente(respuesta):
-            logger.warning(f"⚠️ Respuesta incoherente en confirmación: '{respuesta}'")
-            await self._hablar_frases(["Disculpa, no te escuché bien. ¿Me puedes repetir tu nombre?"])
-            return  # Vuelve a esperar_confirmacion
-        
-        if self._es_confirmacion(respuesta):
+
+        # Paso 1: clasificar la intención con el LLM (reemplaza _es_confirmacion / _es_negacion / incoherente)
+        intent = await self.llm.clasificar_turno("IDENTIDAD", respuesta, self.nombre)
+        logger.info(f"🧭 [CONFIRMACION] intent={intent}  ('{respuesta[:40]}')")
+
+        if intent == "CONFIRMA":
             logger.info("✅ Identidad confirmada")
             self.state = CallState.BIENVENIDA
-        elif self._es_negacion(respuesta):
+
+        elif intent == "NIEGA":
             logger.info("❌ No es la persona")
             self.state = CallState.DESPEDIDA_ERROR
-        else:
+
+        elif intent == "PREGUNTA_QUIEN_LLAMA":
+            logger.info("🙋 Pregunta quién llama → re-identificar (no cuenta como intento fallido)")
+            await self._hablar_frases([get_reidentificacion(self.nombre)])
+
+        elif intent == "CALIBRACION":
+            logger.info("🔊 Calibración → tranquilizar y re-preguntar")
+            await self._hablar_frases([f"Sí, te escucho. ¿Hablo con {self.nombre}?"])
+
+        else:  # OTRO, o None (fallback del clasificador)
             self.intentos_confirmacion += 1
             if self.intentos_confirmacion >= self.MAX_INTENTOS:
                 logger.warning("⚠️ No se pudo confirmar identidad")

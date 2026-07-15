@@ -9,6 +9,14 @@ import scipy.io.wavfile as wav
 
 logger = logging.getLogger("STT")
 
+# Vocabulario del dominio para sesgar Whisper (baja mishears: "cofre"→"jefe de área", "onboarding", etc.).
+# Se pasa como initial_prompt: actúa como contexto previo, empujando la transcripción hacia estos términos.
+INITIAL_PROMPT = (
+    "Conversación telefónica de Recursos Humanos de Salesland sobre la incorporación de un nuevo "
+    "colaborador: horario de oficina, dirección, jefe de área, onboarding, primer día, documentos, "
+    "portal del empleado."
+)
+
 # ========== SINGLETON ==========
 _instance = None
 
@@ -29,6 +37,7 @@ class FasterWhisperSTT:
         self.model_size = os.getenv("WHISPER_MODEL", "small")
         self.compute_type = "float16"
         self.model = None
+        self.ultima_confianza = None  # {avg_logprob, no_speech, compression} de la última transcripción (turn-handler)
         self.executor = ThreadPoolExecutor(max_workers=2)
 
         self.load_model()
@@ -61,6 +70,7 @@ class FasterWhisperSTT:
 
     def _transcribe_sync(self, audio_bytes):
         tmp_file = None
+        self.ultima_confianza = None
         try:
             audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
 
@@ -91,25 +101,38 @@ class FasterWhisperSTT:
                 language="es",
                 beam_size=5,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=500)
+                vad_parameters=dict(min_silence_duration_ms=500),
+                condition_on_previous_text=False,  # corta el arrastre que alimenta alucinaciones
+                initial_prompt=INITIAL_PROMPT      # sesga hacia el vocabulario del dominio (baja mishears)
             )
 
             seg_list = list(segments)
             texto = " ".join([s.text for s in seg_list]).strip()
 
-            # Fase A (instrumentación): loguear las señales de confianza de Whisper SIN cambiar
-            # el comportamiento todavía. Con estos números fijaremos los umbrales de la puerta (Fase C).
-            if seg_list:
-                avg_logprob = sum(s.avg_logprob for s in seg_list) / len(seg_list)
-                no_speech = max(s.no_speech_prob for s in seg_list)
-                compression = max(s.compression_ratio for s in seg_list)
-                logger.info(
-                    f"📊 [STT-CONF] no_speech={no_speech:.2f} avg_logprob={avg_logprob:.2f} "
-                    f"compression={compression:.2f} segs={len(seg_list)} dur={info.duration:.1f}s "
-                    f"texto='{texto}'"
-                )
-            else:
+            # Sin segmentos = el VAD filtró todo (silencio limpio) → sin respuesta.
+            if not seg_list:
                 logger.info("📊 [STT-CONF] sin segmentos (VAD filtró todo el audio)")
+                return ""
+
+            # Señales de confianza de Whisper (el logueo queda ON para seguir afinando).
+            avg_logprob = sum(s.avg_logprob for s in seg_list) / len(seg_list)
+            no_speech = max(s.no_speech_prob for s in seg_list)
+            compression = max(s.compression_ratio for s in seg_list)
+            self.ultima_confianza = {"avg_logprob": avg_logprob, "no_speech": no_speech, "compression": compression}
+            logger.info(
+                f"📊 [STT-CONF] no_speech={no_speech:.2f} avg_logprob={avg_logprob:.2f} "
+                f"compression={compression:.2f} segs={len(seg_list)} dur={info.duration:.1f}s "
+                f"texto='{texto}'"
+            )
+
+            # Fase C — puerta de confianza (umbrales conservadores; ver docs/PLAN_WHISPER_ENDURECIMIENTO.md).
+            # Habla buena observada: no_speech ≤ 0.22 y compression ≤ 1.0 → estos cortes NO la rechazan.
+            if no_speech > 0.60:
+                logger.warning(f"🚧 [STT-GATE] no fiable: no_speech={no_speech:.2f} (silencio/ruido) → descarto '{texto[:50]}'")
+                return ""
+            if compression > 2.40:
+                logger.warning(f"🚧 [STT-GATE] no fiable: compression={compression:.2f} (texto en bucle) → descarto '{texto[:50]}'")
+                return ""
 
             if not self._es_texto_valido(texto):
                 logger.warning(f"⚠️ Texto filtrado (alucinación): '{texto[:50]}'")
@@ -135,6 +158,9 @@ class FasterWhisperSTT:
         patrones_basura = [
             "subtítulos", "amara.org", "gracias por ver",
             "suscríbete", "subscribe", "like",
+            "nos vemos en el próximo", "próximo vídeo", "próximo video",
+            "no olvides suscribirte", "no te olvides de suscribir",
+            "dale like", "comenta y comparte",
             "<|", "|>",
             "♪", "♫", "🎵",
         ]

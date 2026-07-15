@@ -52,51 +52,73 @@ Se rehace **una** capa, no siete.
 
 ## 3. El corazón: el "manejador de turno" (turn-handler)
 
-### Idea
-En cada turno del usuario, **una sola llamada al LLM** devuelve intención + respuesta + fin, en formato
-estructurado forzado por guided decoding:
+### Idea (REVISADA — ver hallazgo)
+Cada turno son **dos pasos**, NO una sola llamada:
+1. **Clasificar** con `guided_choice` (prompt clasificador puro) → `intent` (una etiqueta del set del estado).
+2. **Generar respuesta SOLO si hace falta hablar** (`PREGUNTA` / `FUERA_DE_TEMA`). Para
+   `DESPEDIDA` / `ACK` / `CALIBRACION` / `CONFIRMA` / `NIEGA` el esqueleto ya tiene la transición o la frase
+   canned → **no se genera nada.** `terminar` se deduce del intent (true solo en DESPEDIDA).
 
-```json
-{
-  "intent": "PREGUNTA | DESPEDIDA | CONFIRMA | NIEGA | PREGUNTA_QUIEN_LLAMA | PIDE_REPETIR | FUERA_DE_TEMA",
-  "respuesta": "<texto a hablar, o vacío si el esqueleto lo maneja>",
-  "terminar": true | false
-}
-```
+> ⚠️ **HALLAZGO (probado 2026-07 con `scripts/test_guided_json.py`): NO fusionar clasificar+generar en un
+> solo `guided_json`.** `guided_json` SÍ funciona técnicamente (6/6 JSON válido), PERO pedirle al 2B
+> `{intent, respuesta, terminar}` en una salida **degrada la clasificación de 98.3% → 50%**: el modelo se
+> pone en modo "asistente cálido" y afloja las etiquetas (ej. "eso sería todo" → `ACK` con `terminar=false`,
+> ¡no colgaría!; "¿dónde queda la oficina?" → `FUERA_DE_TEMA` aunque responda la dirección). La generación
+> **contamina** la clasificación. **Solución: separar** — clasificar aislado (guided_choice, 98.3%) y generar aparte.
 
 ### Por qué gana
-1. **Despedida directa, en cualquier forma.** El LLM entiende *significado*: "eso sería todo", "ya estamos",
-   "nada más por ahora", "listo pues" → todas `DESPEDIDA`. **Se borran las listas de palabras. Cero redundancia.**
-2. **Latencia adicional CERO.** Hoy ya llamamos al LLM cada turno para la respuesta. Ahora esa **misma**
-   llamada da también la intención. No se agrega una llamada, se **fusionan dos**.
-3. **Input basura resuelto solo.** "El nombre de mi cabeza" → el LLM ve incoherencia → `PIDE_REPETIR`.
-4. **Fiable en 2B:** `guided_json` fuerza el formato siempre (aunque el modelo sea chico).
+1. **Despedida directa, en cualquier forma.** El clasificador entiende *significado*: "eso sería todo",
+   "ya estamos", "nada más por ahora" → todas `DESPEDIDA`. **Se borran las listas de palabras.**
+2. **Latencia igual o MENOR** (revisado): clasificar es **baratísimo** (~84ms). Solo se genera (~600ms) en
+   los turnos que responden. Para `DESPEDIDA`/`ACK`/`CALIBRACION` **no se genera** → más rápido que hoy
+   (hoy siempre hay una llamada de ~600ms). No se "fusionan dos"; se **evita** la generación cuando no toca.
+3. **Menos brittle:** el clasificador entiende **contexto completo**, no fragmentos de palabras. (El input
+   basura sigue siendo HARD; se mitiga con etapa + confianza + confirmación, no se elimina.)
+4. **Fiable en 2B:** `guided_choice` fuerza la salida a una etiqueta del set; clasificación pura → 98.3% / 100% estable.
 
 ### Cómo se pide a vLLM (por-request, no afecta a GLPI)
 ```python
-# En llm.py — método nuevo, ej. manejar_turno(...)
+# Paso 1 — clasificar (llm.py: clasificar_turno)
 payload = {
     "model": self.model,
-    "messages": [...],                 # system con reglas + conocimiento; user = transcripción
-    "max_tokens": 200,
-    "temperature": 0.3,
-    "guided_json": TURN_SCHEMA,        # ← per-request: fuerza el JSON. GLPI ni se entera.
+    "messages": [SYS_CLASIFICADOR_por_estado, {"role": "user", "content": texto}],
+    "max_tokens": 12, "temperature": 0.0,
+    "guided_choice": LABELS_del_estado,   # ← per-request: fuerza UNA etiqueta. GLPI ni se entera.
     "chat_template_kwargs": {"enable_thinking": False},
 }
+# Paso 2 — generar respuesta (solo si intent ∈ {PREGUNTA, FUERA_DE_TEMA}) = la generación de hoy.
 ```
 
-### Orden de los campos importa
-El JSON pide `intent` **antes** que `respuesta`. Como el modelo genera token a token, primero se
-"compromete" con la intención y luego redacta coherente con ella. Mejor calidad, gratis.
-
 ### Guided decoding garantiza FORMATO, no CORRECCIÓN
-El JSON siempre saldrá válido; que el `intent` sea el correcto depende del modelo. Clasificar en 6-7
-etiquetas claras es trivial para un 2B, y la generación de respuesta ya la vimos funcionar. Realista.
+La salida siempre será una etiqueta válida; que sea la correcta depende del modelo. Clasificar en 5-6
+etiquetas claras, **aislado de la generación**, da 98.3% en el 2B (medido). La lección: mantener clasificar
+y generar como tareas **separadas** — juntarlas hunde la precisión.
 
 ### El manejador es consciente del estado (mismo mecanismo, distinto set de intenciones)
-- En **verificación de identidad** las etiquetas válidas son: `CONFIRMA · NIEGA · PREGUNTA_QUIEN_LLAMA · OTRO`.
-- En **dudas** son: `PREGUNTA · DESPEDIDA · PIDE_REPETIR · FUERA_DE_TEMA · CONFIRMA(backchannel)`.
+Sets **validados en el PoC** (`scripts/eval_intent_2b.py` — 98.3%, 100% estable):
+- **Verificación de identidad:** `CONFIRMA · NIEGA · PREGUNTA_QUIEN_LLAMA · CALIBRACION · OTRO`.
+- **Dudas:** `PREGUNTA · DESPEDIDA · FUERA_DE_TEMA · CALIBRACION · ACK`.
 Es **un solo manejador** parametrizado por el estado, no funciones dispersas.
+`CALIBRACION` = meta-conversación de audio/conexión ("¿me escuchas?", "se corta"); el esqueleto decide reintentar si persiste.
+
+### ⭐ El manejador decide con TEXTO + ETAPA + CONFIANZA (no solo texto) — refinamiento clave
+Aprendido en las pruebas de STT (ver `PLAN_WHISPER_ENDURECIMIENTO.md`): **el texto por sí solo no basta**,
+porque Whisper puede entregar una transcripción **plausible-pero-errada con confianza normal**
+(ej. "Aló, buenas tardes" → "Bueno, eso es todo", `avg_logprob=-1.08`). El manejador/esqueleto decide con **tres insumos**:
+
+1. **Texto** — la transcripción.
+2. **Etapa** — en qué estado va la llamada → **plausibilidad**: una intención imposible para la etapa se rechaza.
+   Ej.: `DESPEDIDA` en el arranque (antes del saludo) = absurdo → ignorar / re-preguntar, sin importar el texto.
+3. **Confianza del STT** (`avg_logprob`, `no_speech`) → **señal BLANDA**, no corte duro (el habla real llegó a -0.99).
+   Débil pero real: en el barrido de pruebas, la ÚNICA alucinación fue la ÚNICA con `avg_logprob < -1.0`.
+
+**Regla de oro — confirmar antes de acciones IRREVERSIBLES:**
+Colgar es irreversible. Antes de colgar por `DESPEDIDA`, si la **etapa es dudosa** o la **confianza es floja**
+(`avg_logprob` muy negativo / `no_speech` elevado) → **confirmar** ("¿seguro que eso es todo?") en vez de
+colgar a ciegas. Esto ataja los dos fallos reales observados: el corte por "eso es todo" (cola perdida por STT
+entrecortado) y el falso "eso es todo" del arranque.
+
+> Los valores de confianza del STT dejan de ser un "gate" que descarta y pasan a ser **contexto que alimenta al cerebro**.
 
 ---
 
@@ -123,11 +145,12 @@ Así se tiene la naturalidad del LLM con las garantías del control determinista
       "no, equivocado"     → NIEGA               → despedida_error
       "¿de parte de quién?"→ PREGUNTA_QUIEN_LLAMA→ re-identifica y vuelve a escuchar
 4. bienvenida      → pre-generada (con barge-in).
-5. dudas (loop)    → turn-handler(estado=DUDAS) por cada turno:
+5. dudas (loop)    → turn-handler(estado=DUDAS) por turno (texto + etapa + confianza):
       pregunta válida      → PREGUNTA     → habla RESPUESTA, sigue en loop
       fuera de tema        → FUERA_DE_TEMA→ habla desvío profesional, sigue
-      STT basura           → PIDE_REPETIR → pide repetir, sigue
-      quiere terminar      → DESPEDIDA    → despedida_ok (terminar=true)
+      audio/conexión       → CALIBRACION  → tranquiliza y retoma; si persiste → reintentar más tarde
+      reconoce, sigue      → ACK          → sigue en loop
+      quiere terminar      → DESPEDIDA    → CONFIRMAR si etapa/confianza dudosa, luego despedida_ok
 6. colgar + Postgres (esqueleto).
 ```
 

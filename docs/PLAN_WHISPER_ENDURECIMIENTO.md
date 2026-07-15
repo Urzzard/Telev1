@@ -104,10 +104,34 @@ Tras transcribir, si NO texto vacío:
 
 ---
 
-## 6. Estado
+## 6. Fase C+D — implementada y verificada (con límites)
 
-- Fase A instrumentada y con datos. Baseline de habla buena capturado.
-- Fantasma NO capturado aún (silencio limpio ya protegido por `vad_filter`).
-- Puerta diseñada (conservadora) y lista para implementar (Fase C).
-- Todo **sin commitear**.
+**Fase C implementada** en `stt.py`: puerta (`no_speech>0.60` OR `compression>2.40`),
+`condition_on_previous_text=False`, lista de bloqueo ampliada. Banco offline: `scripts/stt_replay.py`.
+
+**Verificación offline (20 muestras):** 18/18 habla buena PASA, **0 falsos rechazos**, 2 silencios DESCARTA.
+→ La puerta **NO daña el habla buena**. ✅
+
+**Verificación en vivo (Fase D) — hallazgo importante:**
+- Apareció una **alucinación distinta** al fantasma de YouTube: "Aló, buenas tardes" (audio entrecortado)
+  → transcrito **"Bueno, eso es todo."** Firma: `no_speech=0.12` (BAJO), `avg_logprob=-1.08`, `compression=0.76` (bajo).
+- **La puerta la MISÓ:** `no_speech` y `compression` bajos no la marcan. Solo `avg_logprob < -1.0` la flaggearía,
+  pero el habla real llegó a **-0.99** → margen ~0.09 → **`avg_logprob` NO es usable como corte duro** sin
+  rechazar habla real (peor en líneas entrecortadas → bucles de "¿me repites?").
+- **Conclusión honesta:** la puerta sirve para **silencio, bucles y fantasmas conocidos (blocklist)**, pero
+  **NO** para la **mistranscripción por línea entrecortada** (audio malo → frase plausible-pero-errada con
+  confianza normal). Ese es el bucket **"error acústico"**, no resoluble por métricas → mejor audio /
+  mecanismo de repetición-confirmación / turn-handler.
+- El fantasma de YouTube **no reapareció**.
+- **Corte prematuro:** "eso es todo" (de "...eso es todo, ¿o hay algo más?" con la cola perdida por el STT
+  entrecortado) disparó el keyword de despedida → cortó. Refuerza el turn-handler; raíz = STT perdió la cola.
+
+## 7. Estado
+
+- Fase C+D cerradas. Puerta **segura** (no daña habla buena) + arregla el fantasma conocido (blocklist) +
+  `condition_on_previous_text=False`.
+- **Límite conocido y documentado:** no ataja la mistranscripción por audio entrecortado (bucket error acústico).
+- `avg_logprob` queda como posible **señal blanda** futura (p.ej. pedir confirmación en identidad), NO corte duro.
+- Pendiente: **quitar `STT_DUMP_DIR`** temporal de `docker-compose.yml` al commitear.
+- Todo **sin commitear** (aparte del checkpoint anterior ya pusheado).
 </content>

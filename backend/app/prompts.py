@@ -110,6 +110,17 @@ def get_verificacion(nombre: str):
     return random.choice(opciones)
 
 
+def get_reidentificacion(nombre: str):
+    """Re-identificación cuando el usuario pregunta quién llama ('¿de parte de quién?').
+    Se vuelve a presentar y re-pregunta por la identidad — mata la sensación de bot."""
+    opciones = [
+        f"Te llama Jorge, de Recursos Humanos de Seils Land, para darte la bienvenida. ¿Hablo con {nombre}?",
+        f"Soy Jorge, del área de Recursos Humanos de Seils Land, te contacto por tu incorporación. ¿Eres {nombre}?",
+        f"Te llamo de parte de Recursos Humanos de Seils Land, por tu ingreso. ¿Me comunico con {nombre}?",
+    ]
+    return random.choice(opciones)
+
+
 def get_bienvenida(nombre: str, puesto: str, fecha: str):
     """Speech de bienvenida - Múltiples estructuras"""
     

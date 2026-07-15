@@ -6,6 +6,59 @@ import re
 logger = logging.getLogger("LLM")
 
 
+# ==================== TURN-HANDLER: clasificador de intención ====================
+# Prompts y sets VALIDADOS (scripts/eval_intent_2b.py 98.3% + test_turn_handler.py 23/23, 100% estable).
+# Diseño: docs/ARQUITECTURA_CEREBRO_LLM.md — clasificar (guided_choice) va SEPARADO de generar.
+
+IDENT_LABELS = ["CONFIRMA", "NIEGA", "PREGUNTA_QUIEN_LLAMA", "CALIBRACION", "OTRO"]
+DUDAS_LABELS = ["PREGUNTA", "DESPEDIDA", "FUERA_DE_TEMA", "CALIBRACION", "ACK"]
+
+SYS_IDENT = """Eres un clasificador de intención para un teleoperador de RRHH de Salesland.
+Estás en la fase de VERIFICACIÓN DE IDENTIDAD: acabas de preguntar "¿hablo con {nombre}?".
+Clasifica la respuesta del usuario en EXACTAMENTE una de estas etiquetas:
+- CONFIRMA: confirma que es la persona o te invita a seguir ("sí soy yo", "el mismo", "con él habla", "dígame", "cuénteme").
+- NIEGA: dice que no es la persona, que se equivocó, o que es número equivocado.
+- PREGUNTA_QUIEN_LLAMA: pregunta QUIÉN llama o DE PARTE de quién ("¿de parte?", "¿quién habla?").
+- CALIBRACION: comenta la calidad del audio/conexión o verifica que lo escuchas ("¿me escucha?", "¿sigue ahí?", "no le escucho", "se corta", "hay eco o ruido").
+- OTRO: pide esperar o nada de lo anterior ("espere un momento", "ya regreso").
+Responde SOLO con la etiqueta, en mayúsculas."""
+
+FEWSHOT_IDENT = [
+    ("Sí, dígame nomás", "CONFIRMA"),
+    ("No, se equivocó de número", "NIEGA"),
+    ("¿Quién me llama?", "PREGUNTA_QUIEN_LLAMA"),
+    ("Se escucha un eco horrible", "CALIBRACION"),
+    ("Deme un segundo, ya regreso", "OTRO"),
+]
+
+SYS_DUDAS = """Eres un clasificador de intención para un teleoperador de RRHH de Salesland.
+El usuario YA confirmó su identidad y está en la fase de DUDAS sobre su incorporación.
+Los ÚNICOS temas "de su incorporación" son: horario, ubicación/cómo llegar, primer día, documentos a llevar, portal del empleado y motivo de la llamada.
+Clasifica su último mensaje en EXACTAMENTE una etiqueta:
+- PREGUNTA: pide información sobre alguno de esos temas de su incorporación.
+- DESPEDIDA: cierra la conversación o ya no necesita más, dicho de CUALQUIER forma, AUNQUE venga con un agradecimiento ("eso sería todo", "ya estamos", "no tengo más preguntas", "listo gracias", "chau").
+- FUERA_DE_TEMA: pregunta algo que NO está en esos temas: noticias, deportes, chistes, clima, política, O temas que se derivan a RRHH presencial (salario, sueldo, vacaciones, beneficios, contrato).
+- CALIBRACION: comenta la calidad del audio/conexión o verifica que lo escuchas ("¿me escuchas?", "¿sigues ahí?", "se escucha entrecortado", "no te escucho", "hay bulla o eco").
+- ACK: solo reconoce o agradece y la conversación SIGUE abierta ("ok, ya", "ah entiendo", "claro"). Si además cierra o se despide, entonces es DESPEDIDA, no ACK.
+Responde SOLO con la etiqueta, en mayúsculas."""
+
+FEWSHOT_DUDAS = [
+    ("¿A qué hora es el ingreso?", "PREGUNTA"),
+    ("Ya no necesito nada más, gracias", "DESPEDIDA"),
+    ("Ya, ok, chau pues", "DESPEDIDA"),
+    ("¿Cuánto es el sueldo?", "FUERA_DE_TEMA"),
+    ("¿Cómo quedó el partido de ayer?", "FUERA_DE_TEMA"),
+    ("Perdona, se cortó, ¿qué decías?", "CALIBRACION"),
+    ("Ah ok, perfecto", "ACK"),
+]
+
+# estado → (system_prompt, few-shot, labels)
+_CLASIF = {
+    "IDENTIDAD": (SYS_IDENT, FEWSHOT_IDENT, IDENT_LABELS),
+    "DUDAS": (SYS_DUDAS, FEWSHOT_DUDAS, DUDAS_LABELS),
+}
+
+
 class LLMClient:
     def __init__(self):
         self.base_url = os.getenv("VLLM_URL", "http://vllm:8000")
@@ -87,6 +140,52 @@ class LLMClient:
         except Exception as e:
             logger.error(f"❌ Error en generate_response: {e}")
             return ""
+
+    async def clasificar_turno(self, estado: str, texto: str, nombre: str = "usted") -> str:
+        """Clasifica la intención del turno con guided_choice (per-request; NO afecta a GLPI).
+
+        Paso 1 del turn-handler (ver docs/ARQUITECTURA_CEREBRO_LLM.md). Va SEPARADO de la
+        generación: fusionarlos hunde la precisión (98.3% → 50%). Devuelve UNA etiqueta del
+        set del estado, o None si falla (para que el esqueleto decida con un fallback).
+        """
+        cfg = _CLASIF.get(estado)
+        if not cfg:
+            logger.error(f"❌ [TURN] estado desconocido: {estado}")
+            return None
+        sys_tpl, fewshot, labels = cfg
+        sys_prompt = sys_tpl.format(nombre=nombre) if "{nombre}" in sys_tpl else sys_tpl
+
+        messages = [{"role": "system", "content": sys_prompt}]
+        for ej, lab in fewshot:
+            messages.append({"role": "user", "content": ej})
+            messages.append({"role": "assistant", "content": lab})
+        messages.append({"role": "user", "content": texto})
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "max_tokens": 12,
+                        "temperature": 0.0,
+                        "guided_choice": labels,   # ← fuerza UNA etiqueta del set
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                )
+            if response.status_code == 200:
+                raw = response.json()["choices"][0]["message"]["content"].strip().upper()
+                for lab in labels:
+                    if lab in raw:
+                        logger.info(f"🧭 [TURN] {estado} → {lab}  ('{texto[:40]}')")
+                        return lab
+                logger.warning(f"⚠️ [TURN] intent no reconocido: '{raw}' → None")
+            else:
+                logger.error(f"❌ [TURN] clasificar HTTP {response.status_code}: {response.text[:120]}")
+        except Exception as e:
+            logger.error(f"❌ [TURN] Error clasificando: {e}")
+        return None
 
     def _limpiar_respuesta(self, texto: str) -> str:
         """Limpia artefactos de la respuesta del LLM"""
