@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Verifica que el vLLM soporta `guided_json` (struct completo del turn-handler), no solo `guided_choice`.
 Es el último riesgo técnico antes de construir el manejador de turno. Ver docs/ARQUITECTURA_CEREBRO_LLM.md

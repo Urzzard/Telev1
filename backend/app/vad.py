@@ -33,7 +33,11 @@ class VoiceActivityDetector:
     
     # Silero requiere exactamente 256 samples para 8kHz
     CHUNK_SAMPLES = 256
-    
+    # Frames de silencio para dar por terminado el turno (~130ms por frame).
+    # Palanca 1 (latencia): 8≈1040ms → 6≈780ms; baja ~260ms de "aire muerto" tras hablar.
+    # Si corta a gente que pausa mucho, subir a 7.
+    SILENCE_END_FRAMES = 6
+
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
         self.model = get_vad()
@@ -95,7 +99,7 @@ class VoiceActivityDetector:
                 self.speech_started = True
         else:
             self.silence_frames += 1
-            if self.speech_started and self.silence_frames >= 8:
+            if self.speech_started and self.silence_frames >= self.SILENCE_END_FRAMES:
                 speech_ended = True
         
         return {
