@@ -41,7 +41,9 @@ class VoiceActivityDetector:
     def __init__(self, sample_rate: int = 8000):
         self.sample_rate = sample_rate
         self.model = get_vad()
-        self.threshold = 0.3
+        # 0.5 (antes 0.3): el ruido/eco tenue (conf ~0.35) disparaba falsa "voz" y cortaba la escucha
+        # en ~0.7s → re-prompt inmediato. La voz real sale a 0.76+, así que 0.5 la separa limpio.
+        self.threshold = 0.5
         self.reset()
     
     def reset(self):

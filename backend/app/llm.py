@@ -1,4 +1,5 @@
 import httpx
+import json
 import logging
 import os
 import re
@@ -140,6 +141,44 @@ class LLMClient:
         except Exception as e:
             logger.error(f"❌ Error en generate_response: {e}")
             return ""
+
+    async def generate_response_stream(self, messages: list):
+        """Genera la respuesta del LLM en STREAMING: hace `yield` de trozos de texto conforme llegan.
+
+        Cimiento del pipeline LLM→TTS por oraciones (Palanca 2, latencia). NO limpia ni trunca — el
+        consumidor (call_agent) arma oraciones, las limpia y las manda al TTS. Si algo falla o el
+        stream no arranca, el llamador cae al camino no-streaming (generate_response).
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": 150,
+            "temperature": 0.4,   # más enfocado/conciso para el pipeline (menos divague)
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream(
+                    "POST", f"{self.base_url}/v1/chat/completions", json=payload
+                ) as response:
+                    if response.status_code != 200:
+                        logger.error(f"❌ Error vLLM stream: {response.status_code}")
+                        return
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            delta = json.loads(data)["choices"][0]["delta"].get("content")
+                        except Exception:
+                            continue
+                        if delta:
+                            yield delta
+        except Exception as e:
+            logger.error(f"❌ Error en generate_response_stream: {e}")
 
     async def clasificar_turno(self, estado: str, texto: str, nombre: str = "usted") -> str:
         """Clasifica la intención del turno con guided_choice (per-request; NO afecta a GLPI).

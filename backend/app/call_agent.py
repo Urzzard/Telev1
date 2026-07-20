@@ -462,60 +462,201 @@ class CallAgent:
         # 2. Registrar pregunta
         self.intent_detector.registrar_pregunta(self.duda_actual)
 
-        # 3. Generar respuesta con LLM
-        t_llm_inicio = time.time()
+        # 3. Construir prompt + historial (la generación va dentro del pipeline)
         try:
             system_prompt = get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)
-            
             if self.resumen_conversacion:
                 system_prompt += f"\n\nTEMAS YA CUBIERTOS EN ESTA LLAMADA:\n{self.resumen_conversacion}"
-
-            pregunta_actual = {"role": "user", "content": self.duda_actual}
-
-            # Actualizar resumen si acumulamos 3 turnos nuevos
             await self._actualizar_resumen()
-            self.historial_llm.append(pregunta_actual)
-            
+            self.historial_llm.append({"role": "user", "content": self.duda_actual})
             messages = [{"role": "system", "content": system_prompt}] + self.historial_llm[-4:]
-            
-            respuesta = await self.llm.generate_response(messages)
-            
-            if not respuesta or len(respuesta) < 5:
-                respuesta = "Disculpa, no entendí tu pregunta. ¿Podrías repetirla?"
-            
-            self.historial_llm.append({
-                "role": "assistant",
-                "content": respuesta
-            })
-            
-            # Registrar para fine-tuning
-            self._registrar_turno("asistente", respuesta, categoria=categoria)
-
-
         except Exception as e:
-            logger.error(f"❌ Error LLM: {e}")
-            respuesta = "Disculpa, tuve un problema técnico. ¿Podrías repetir tu pregunta?"
-        
-        t_llm_fin = time.time()
-        logger.info(f"⏱️ [TIEMPO] LLM: {(t_llm_fin - t_llm_inicio)*1000:.0f}ms")
-        
-        # 5. Reproducir respuesta
+            logger.error(f"❌ Error armando prompt: {e}")
+            messages = [
+                {"role": "system", "content": get_system_prompt_llm(self.nombre, self.puesto, self.fecha_inicio)},
+                {"role": "user", "content": self.duda_actual},
+            ]
+
+        # 4 y 5: Pipeline LLM→TTS por oraciones (Palanca 2) — genera y reproduce a la vez.
         t_tts_inicio = time.time()
-        if not await self._hablar_con_streaming_real(respuesta):
+        if not await self._responder_pipeline(messages, categoria):
             self.state = CallState.FINALIZADO
             return
-        t_tts_fin = time.time()
-        logger.info(f"⏱️ [TIEMPO] TTS+Reproducción: {(t_tts_fin - t_tts_inicio)*1000:.0f}ms")
-        
+        logger.info(f"⏱️ [TIEMPO] TTS+Reproducción: {(time.time() - t_tts_inicio)*1000:.0f}ms")
 
-        # 6. Ya no preguntamos automáticamente - el LLM decide si incluir pregunta
         if self.barge_in_detected:
             logger.info("⏩ [FLUJO] Barge-in detectado, continuando...")
-        
-        TIEMPO_TOTAL = time.time() - TIEMPO_INICIO
-        logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {TIEMPO_TOTAL*1000:.0f}ms")
-        
+
+        logger.info(f"⏱️ [TIEMPO] TOTAL estado_responder: {(time.time() - TIEMPO_INICIO)*1000:.0f}ms")
         self.state = CallState.ESPERAR_DUDAS
+
+    async def _responder_pipeline(self, messages, categoria=None) -> bool:
+        """Palanca 2: stream del LLM → oraciones → CosyVoice (adelantado en cola) → enviar audio.
+
+        - Sin gaps: el productor sintetiza oraciones POR DELANTE mientras el consumidor reproduce.
+        - Barge-in = CANCELACIÓN DURA: se corta el audio, se cancela el stream del LLM, se vacía la
+          cola y se abandona la síntesis en vuelo. Solo sobrevive la voz nueva (barge_in_audio).
+        - Paracaídas: si el stream no produce audio, cae al camino no-streaming.
+        Devuelve False solo si el WebSocket se desconectó.
+        """
+        if self.ws.client_state.name != "CONNECTED":
+            return False
+
+        self.barge_in_detected = False
+        self.barge_in_audio = bytearray()
+
+        cola = asyncio.Queue()
+        SENTINELA = object()
+        dichas = []   # oraciones sintetizadas (respuesta hablada, para historial / futuro "retomar")
+        t0 = time.time()   # para medir el tiempo al primer audio (Palanca 2)
+
+        async def _sintetizar_y_encolar(texto):
+            limpio = self._limpiar_oracion(texto)
+            if not limpio:
+                return
+            wav = await self.tts.synthesize(limpio)
+            if wav and not self.barge_in_detected:
+                dichas.append(limpio)
+                await cola.put(wav)
+
+        async def productor():
+            buf, primero = "", True
+            try:
+                async for delta in self.llm.generate_response_stream(messages):
+                    if self.barge_in_detected:
+                        break
+                    buf += delta
+                    while not self.barge_in_detected:
+                        corte = self._buscar_corte_oracion(buf, primero)
+                        if corte == -1:
+                            break
+                        oracion, buf = buf[:corte + 1], buf[corte + 1:]
+                        await _sintetizar_y_encolar(oracion)
+                        primero = False
+                if buf.strip() and not self.barge_in_detected:   # cola final
+                    await _sintetizar_y_encolar(buf)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"❌ [PIPELINE] productor: {e}")
+            finally:
+                await cola.put(SENTINELA)
+
+        prod = asyncio.create_task(productor())
+        monitor = None
+        chunks_enviados = 0
+        hubo_audio = False
+        total_pcm = 0     # bytes 8k enviados (para esperar la reproducción real antes de volver)
+        t_envio = None    # cuándo empezó a enviarse el audio
+        try:
+            while True:
+                wav = await cola.get()
+                if wav is SENTINELA or self.barge_in_detected:
+                    break
+                if not hubo_audio:
+                    logger.info(f"🚀 [PIPELINE] 1er audio a {(time.time() - t0)*1000:.0f}ms")
+                hubo_audio = True
+                audio_24k = np.frombuffer(wav[44:], dtype=np.int16)   # saltar header WAV
+                audio_8k = signal.resample_poly(audio_24k, 1, 3)
+                audio_8k = np.clip(audio_8k * 1.5, -32768, 32767).astype(np.int16)
+                pcm = audio_8k.tobytes()
+                for i in range(0, len(pcm), 1600):
+                    if self.ws.client_state.name != "CONNECTED":
+                        return False
+                    if self.barge_in_detected:
+                        break
+                    bloque = pcm[i:i + 1600]
+                    await self.ws.send_bytes(bloque)
+                    if t_envio is None:
+                        t_envio = time.time()
+                    total_pcm += len(bloque)
+                    chunks_enviados += 1
+                    if chunks_enviados == 3 and monitor is None:   # warmup: activar barge-in tras ~300ms
+                        monitor = asyncio.create_task(self._monitorear_barge_in())
+                    await asyncio.sleep(0.05)
+
+            # Esperar a que TERMINE de reproducirse el audio en buffer antes de volver.
+            # Si no, esperar_dudas escucha mientras el bot aún suena → capta su eco → "audio insuficiente".
+            # El monitor sigue vivo aquí, así que un barge-in en la cola de la respuesta también corta.
+            if not self.barge_in_detected and t_envio is not None:
+                restante = total_pcm / 16000 - (time.time() - t_envio)
+                while restante > 0 and not self.barge_in_detected:
+                    if self.ws.client_state.name != "CONNECTED":
+                        break
+                    await asyncio.sleep(min(0.1, restante))
+                    restante -= 0.1
+        finally:
+            # Teardown: cancelar productor + monitor y vaciar la cola (nada pendiente sobrevive)
+            prod.cancel()
+            try:
+                await prod
+            except (asyncio.CancelledError, Exception):
+                pass
+            if monitor:
+                monitor.cancel()
+                try:
+                    await monitor
+                except (asyncio.CancelledError, Exception):
+                    pass
+            while not cola.empty():
+                try:
+                    cola.get_nowait()
+                except Exception:
+                    break
+
+        respuesta_texto = " ".join(dichas).strip()
+
+        # Paracaídas: el stream no produjo audio (y NO fue barge-in) → camino no-streaming.
+        if not hubo_audio and not self.barge_in_detected:
+            logger.warning("⚠️ [PIPELINE] sin audio → fallback no-streaming")
+            respuesta_texto = await self.llm.generate_response(messages)
+            if not respuesta_texto or len(respuesta_texto) < 5:
+                respuesta_texto = "Disculpa, no entendí tu pregunta. ¿Podrías repetirla?"
+            if not await self._hablar_con_streaming_real(respuesta_texto):
+                return False
+
+        if respuesta_texto:
+            self.historial_llm.append({"role": "assistant", "content": respuesta_texto})
+            self._registrar_turno("asistente", respuesta_texto, categoria=categoria)
+
+        return True
+
+    def _buscar_corte_oracion(self, buf: str, primero: bool) -> int:
+        """Índice (incluido) donde cortar una oración hablable, o -1 si aún no.
+        El 1er trozo puede cortar en coma/clausula (o ~10 palabras) para sacar audio rápido;
+        el resto solo por fin de oración. Mínimo 2 palabras → nada de fragmentos sueltos."""
+        MIN_PAL, MAX_PAL_1 = 2, 10
+
+        def _corte(chars):
+            best = -1
+            for c in chars:
+                i = buf.find(c)
+                while i != -1:
+                    if len(buf[:i + 1].split()) >= MIN_PAL:
+                        best = i if best == -1 else min(best, i)
+                        break
+                    i = buf.find(c, i + 1)
+            return best
+
+        cut = _corte(".!?")          # fin de oración (siempre)
+        if cut != -1:
+            return cut
+        if primero:
+            cut = _corte(",;:")      # coma/clausula (solo 1er trozo)
+            if cut != -1:
+                return cut
+            if len(buf.split()) >= MAX_PAL_1:
+                return len(buf) - 1
+        return -1
+
+    def _limpiar_oracion(self, texto: str) -> str:
+        """Limpieza ligera por oración para el pipeline (markdown, tokens, emojis, espacios)."""
+        t = re.sub(r'<\|?/?think\|?>', '', texto, flags=re.IGNORECASE)
+        t = re.sub(r'<\|.*?\|>', '', t)
+        t = t.replace('*', '').replace('#', '')
+        t = re.sub(r'[🌟😊👋🎉✨💼📧🏢⏰📍]', '', t)
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t if any(c.isalpha() for c in t) else ""
 
     async def _estado_despedida_ok(self):
         """Despedida exitosa"""
@@ -632,7 +773,7 @@ class CallAgent:
         return False
         
 
-    async def _escuchar_respuesta(self, timeout: float = 6.0):
+    async def _escuchar_respuesta(self, timeout: float = 7.0):
         """Escucha respuesta del usuario usando Silero VAD - CON MEDICIÓN QUIRÚRGICA"""
         
         # ========== MEDICIÓN QUIRÚRGICA ==========

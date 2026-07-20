@@ -90,6 +90,27 @@ Con las tres primeras se llega muy cerca del ideal STS **sin** las dos últimas 
 
 ---
 
+## 6-bis. Barge-in en el pipeline (cancelación dura AHORA + retomar como idea)
+
+**Ahora (cancelación dura):** al detectar voz durante la respuesta, se tumba TODO aguas abajo — se corta el
+audio, se cancela el stream del LLM, se vacía la cola de oraciones, se abandona la síntesis en vuelo de
+CosyVoice, y se captura la nueva voz como el siguiente turno. Solo sobrevive la voz nueva → nada se descuadra
+aunque haya generaciones pendientes. (Warmup: el monitor se activa tras ~300ms de audio para que el eco del
+propio bot no dispare un falso barge-in. Paracaídas: si el pipeline falla, cae al camino no-streaming.)
+
+**Idea futura (retomar ante falso barge-in) — muy natural, del usuario:** un barge-in puede ser **ruido
+externo**, no una interrupción real. Lo humano: *"perdón, ¿decías algo?... ¿no? te decía que…"*. Diseño:
+1. Salta el barge-in → cortar y capturar.
+2. ¿Real o ruido? Se decide con piezas que YA existen: la **puerta de confianza del STT** (ruido → vacío/basura)
+   y/o el **turn-handler** (sale `CALIBRACION`/incoherente/vacío → no es pregunta nueva).
+3. Si NO fue real → mini-calibración (*"¿decías algo?"* = intent `CALIBRACION`) → si el usuario dice que no →
+   **retomar** donde se quedó.
+4. Si fue real → procesar normal.
+
+**Implicación:** para retomar hay que **conservar** las oraciones pendientes en pausa (no descartarlas). Es una
+capa ENCIMA de la cancelación dura. Como el consumidor ya tendrá las oraciones en mano, **retomar se agrega
+después sumando, no reescribiendo** → construir el pipeline dejándolo listo para esta extensión.
+
 ## 7. Estado y orden sugerido
 
 Todo **diseñado, nada construido**. Orden propuesto (el usuario decide cuándo pasar de diseño a código):
