@@ -406,42 +406,50 @@ class CallAgent:
             await self._despedir_sin_respuesta()
             return
         
-        # NUEVO: Verificar si es backchannel/confirmación PRIMERO
-        if self._es_confirmacion_o_backchannel(respuesta):
-            logger.info("✅ Usuario confirmó, preguntando si hay más dudas")
+        # TURN-HANDLER: clasificar la intención (reemplaza las 4 funciones de palabras)
+        intent = await self.llm.clasificar_turno("DUDAS", respuesta)
+        conf = getattr(self.stt, "ultima_confianza", None)
+        logger.info(f"🧭 [DUDAS] intent={intent}  ('{respuesta[:50]}')")
+
+        if intent == "PREGUNTA":
+            logger.info(f"❓ Usuario tiene duda: {respuesta}")
+            self.duda_actual = respuesta
+            self._registrar_turno("usuario", respuesta, confianza=self.vad.max_confidence)
+            self.state = CallState.RESPONDER
+
+        elif intent == "DESPEDIDA":
+            # Confirmar antes de COLGAR (acción irreversible) si la transcripción vino con confianza floja.
+            fiable = not (conf and (conf.get("avg_logprob", 0) < -1.0 or conf.get("no_speech", 0) > 0.6))
+            if fiable:
+                logger.info("👋 [DUDAS] Despedida → colgar")
+                self.state = CallState.DESPEDIDA_OK
+            else:
+                logger.info("🤔 [DUDAS] Despedida con confianza floja → confirmar antes de colgar")
+                await self._hablar_frases(["¿Seguro que eso es todo?"])
+                confirm = await self._escuchar_respuesta()
+                if not confirm or await self.llm.clasificar_turno("DUDAS", confirm) != "PREGUNTA":
+                    self.state = CallState.DESPEDIDA_OK
+                else:
+                    self.duda_actual = confirm
+                    self._registrar_turno("usuario", confirm, confianza=self.vad.max_confidence)
+                    self.state = CallState.RESPONDER
+
+        elif intent == "FUERA_DE_TEMA":
+            logger.info(f"🚫 Fuera de tema: '{respuesta}'")
+            await self._hablar_frases(["Solo puedo ayudarte con temas de tu incorporación. ¿Tienes alguna duda sobre tu primer día, horario o ubicación?"])
+            # (estado sin cambiar → vuelve a esperar_dudas)
+
+        elif intent == "CALIBRACION":
+            logger.info("🔊 [DUDAS] Calibración → tranquilizar y re-preguntar")
+            await self._hablar_frases(["Sí, te escucho bien. ¿Me repites tu pregunta, por favor?"])
+
+        elif intent == "ACK":
+            logger.info("✅ [DUDAS] Backchannel → preguntar si hay más dudas")
             await self._hablar_frases([get_pregunta_mas_dudas()])
-            respuesta = await self._escuchar_respuesta()
-            
-            if not respuesta:
-                await self._despedir_sin_respuesta()
-                return
 
-        # NUEVO: Verificar si es pregunta fuera de tema (no relacionada con onboarding)
-        if self.intent_detector.es_pregunta_fuera_de_tema(respuesta):
-            logger.info(f"🚫 Pregunta fuera de tema: '{respuesta}'")
-            await self._hablar_frases(["Disculpa, solo puedo ayudarte con temas de tu incorporación a la empresa. ¿Tienes alguna duda sobre tu primer día, horario, ubicación o demás?"])
-            return  # Vuelve a esperar_dudas
-
-
-        # NUEVO: Verificar si es respuesta incoherente (mala transcripción)
-        if self.intent_detector.es_respuesta_incoherente(respuesta):
-            logger.warning(f"⚠️ Respuesta incoherente detectada: '{respuesta}'")
+        else:  # None (el clasificador falló) → pedir repetir, sin perder el turno
+            logger.warning("⚠️ [DUDAS] intent None → pedir repetir")
             await self._hablar_frases(["Disculpa, no te escuché bien. ¿Me lo puedes repetir?"])
-            return  # Vuelve a esperar_dudas
-        
-        # LUEGO verificar si quiere terminar (despedida explícita)
-        if self._es_despedida_explicita(respuesta):
-            logger.info("👋 Usuario se despide explícitamente")
-            self.state = CallState.DESPEDIDA_OK
-            return
-        
-        # Si no es despedida, es una duda
-        logger.info(f"❓ Usuario tiene duda: {respuesta}")
-        self.duda_actual = respuesta
-
-        # Registrar para fine-tuning
-        self._registrar_turno("usuario", respuesta, confianza=self.vad.max_confidence)
-        self.state = CallState.RESPONDER
 
     async def _estado_responder(self):
         """Responde usando LLM - valida tema antes de responder"""
