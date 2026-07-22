@@ -998,94 +998,6 @@ class CallAgent:
                 except asyncio.CancelledError:
                     pass
 
-    def _es_confirmacion_o_backchannel(self, texto: str) -> bool:
-        """
-        Detecta si el usuario está confirmando/aceptando información.
-        Esto NO es una despedida, requiere preguntar si hay más dudas.
-        """
-        if not texto:
-            return False
-        
-        texto_lower = texto.lower().strip()
-        
-        # Confirmaciones que NO son despedidas
-        confirmaciones = [
-            "ok", "okey", "okay", "vale", "bien", "bueno",
-            "ah ok", "ah bueno", "ah ya", "ya veo",
-            "está bien", "esta bien", "muy bien", 
-            "entiendo", "entendido", "perfecto", "genial",
-            "claro", "claro que sí", "de acuerdo", "listo",
-            "ah bueno está bien", "ah bueno esta bien",
-            "ok perfecto", "bien gracias", "ok gracias",
-            "ya entendí", "ya entendi", "ahora sí", "ahora si",
-        ]
-        
-        # Verificar coincidencia exacta o casi exacta
-        texto_limpio = texto_lower.rstrip('.,!?')
-        
-        for conf in confirmaciones:
-            if texto_limpio == conf or texto_limpio.startswith(conf + " ") or texto_limpio.endswith(" " + conf):
-                return True
-        
-        # Si tiene menos de 5 palabras y NO contiene palabras interrogativas
-        palabras = texto_limpio.split()
-        if len(palabras) <= 5:
-            interrogativas = ["qué", "que", "cuál", "cual", "cómo", "como", 
-                            "dónde", "donde", "cuándo", "cuando", "por qué",
-                            "quién", "quien", "cuánto", "cuanto"]
-            tiene_pregunta = any(q in texto_lower for q in interrogativas)
-            
-            # Indicadores de querer más info
-            quiere_info = ["quisiera", "gustaría", "gustaria", "quiero", 
-                          "puedes", "podrías", "podrias", "dime", "necesito",
-                          "también", "tambien", "otra", "otro", "más", "mas"]
-            quiere_mas = any(q in texto_lower for q in quiere_info)
-            
-            if not tiene_pregunta and not quiere_mas:
-                # Palabras típicas de confirmación
-                palabras_confirm = ["ok", "sí", "si", "bueno", "bien", "claro", 
-                                   "perfecto", "genial", "entiendo", "ah", "ya"]
-                if any(p in palabras for p in palabras_confirm):
-                    return True
-        
-        return False
-    
-
-    def _es_despedida_explicita(self, texto: str) -> bool:
-        """
-        Detecta SOLO despedidas claras y explícitas.
-        Más estricto que _es_despedida() para evitar falsos positivos.
-        """
-        texto_lower = texto.lower().strip()
-        
-        # Despedidas explícitas (el usuario claramente quiere terminar)
-        despedidas_claras = [
-            "no, nada más", "no nada más", "no, nada mas", "no nada mas",
-            "no tengo más dudas", "no tengo mas dudas",
-            "no tengo más preguntas", "no tengo mas preguntas",
-            "no, gracias", "no gracias", 
-            "eso es todo", "eso era todo", "era todo",
-            "ninguna duda", "ninguna pregunta", "ninguna más", "ninguna mas",
-            "chau", "chao", "adiós", "adios", "bye", "hasta luego",
-            "nos vemos", "me despido", "hasta pronto",
-            "no, ya está", "no ya está", "no, ya esta", "no ya esta",
-            "listo, gracias", "listo gracias",
-            "perfecto, eso es todo", "perfecto eso es todo",
-        ]
-        
-        for despedida in despedidas_claras:
-            if despedida in texto_lower:
-                return True
-        
-        # "gracias" + indicador de cierre
-        if "gracias" in texto_lower:
-            cierres = ["no", "nada", "eso es todo", "era todo", "listo", "ya no"]
-            if any(c in texto_lower for c in cierres):
-                return True
-        
-        return False
-
-
     async def _monitorear_barge_in(self):
         """
         PASO 1: Solo detectar voz y marcar para cortar TTS.
@@ -1286,25 +1198,6 @@ class CallAgent:
                 except asyncio.CancelledError:
                     pass
 
-
-    def _es_confirmacion(self, texto: str) -> bool:
-        """Detecta si el usuario confirma"""
-        patterns = [
-            r"\bs[íi]\b", r"soy yo", r"correcto", r"así es", r"aja",
-            r"claro", r"dime", r"el mismo", r"la misma", r"con [eé]l",
-            r"con ella", r"s[íi] soy", r"afirmativo"
-        ]
-        texto_lower = texto.lower()
-        return any(re.search(p, texto_lower) for p in patterns)
-
-    def _es_negacion(self, texto: str) -> bool:
-        """Detecta si el usuario niega"""
-        patterns = [
-            r"\bno\b", r"equivocad", r"error", r"no soy",
-            r"otro número", r"número equivocado"
-        ]
-        texto_lower = texto.lower()
-        return any(re.search(p, texto_lower) for p in patterns)
 
     def _registrar_turno(self, rol: str, texto: str, categoria: str = None, confianza: float = None):
         """Registra turno de conversación para fine-tuning"""
